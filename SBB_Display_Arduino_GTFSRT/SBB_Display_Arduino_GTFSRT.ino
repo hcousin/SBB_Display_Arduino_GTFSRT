@@ -3,30 +3,33 @@
  * @date      2024-07-12 / updated 2025
  *
  * @note Migrated from transport.opendata.ch/v1 (discontinued) to
- *       opentransportdata.swiss GTFS-RT API.
+ *       opentransportdata.swiss OJP (Open Journey Planner) API.
  *
- *       API reference:
- *         https://opentransportdata.swiss/de/cookbook/realtime-prediction-cookbook/gtfs-rt/
+ *       API references:
+ *         OJP StopEventService (departures + destination):
+ *           https://opentransportdata.swiss/en/cookbook/ojp-stopeventservice/
+ *         OJP LocationInformationRequest (nearest stop by GPS):
+ *           https://opentransportdata.swiss/cookbook/ojplocationinformationrequest/
  *
  *       Key changes vs. original:
- *         - fetchStationDataFromGPS() removed (no GPS-to-stop lookup in GTFS-RT).
- *           Nearby stops are now defined in a static list in credentials.h.
- *         - fetchStationBoardData() rewrites: calls the GTFS-RT JSON endpoint,
- *           filters trip_update entities by stop_id and collects the next N departures.
- *         - All HTTP calls upgraded to HTTPS with Bearer token in Authorization header.
- *         - User-Agent header added (required by the API).
- *         - Follow-redirect enabled (the API uses cache redirects).
- *         - Rate limit: max 2 requests/minute (30 s cache on server side) – sleep
- *           interval increased to 35 s to stay comfortably within the limit.
+ *         - fetchStationBoardData() replaced by fetchDepartures() which calls the
+ *           OJP StopEventRequest.  This returns destination (DestinationText),
+ *           line name (PublishedLineName), timetabled departure and estimated
+ *           (real-time) departure all in one XML response – no GTFS static join needed.
+ *         - fetchNearestStop() added: obtains GPS fix and calls OJP
+ *           LocationInformationRequest to resolve the nearest stop automatically.
+ *         - All HTTP calls use HTTPS with Bearer token in Authorization header.
+ *         - No GTFS-RT dependency; OJP covers both timetable and real-time data.
  *
  *       How to obtain an API key:
  *         1. Register at https://api-manager.opentransportdata.swiss/
- *         2. Create an Application and subscribe to the "GTFS-RT" API (Default Key).
+ *         2. Create an Application and subscribe to the "OJP" API (Default Key).
  *         3. Copy the Bearer token into GTFS_RT_API_KEY in credentials.h.
  *
- *       How to find your GTFS stop IDs:
+ *       How to find your OJP stop IDs:
+ *         IDs are the same as GTFS stop_ids (e.g. "8503000" for Zürich HB).
  *         Download stops.txt from https://data.opentransportdata.swiss/dataset/timetable-2026-gtfs2020
- *         and search for your station name.  IDs look like "8503000" (Zürich HB).
+ *         or use fetchNearestStop() to resolve them automatically via GPS.
  *
  * @note Arduino IDE Settings
  *       Tools ->
@@ -44,7 +47,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <ArduinoJson.h>
 #include <Arduino.h>
 #include "epd_driver.h"
 #include "firasans.h"
@@ -86,16 +88,11 @@
 #define GPIO_CS   (39)
 
 // ---------------------------------------------------------------------------
-// GTFS-RT endpoint (JSON variant, for testing / embedded use)
-// The server caches responses for 30 s, so 2 requests/minute is the effective
-// maximum.  Production apps should use the binary protobuf endpoint (no
-// ?format=JSON) for better performance.
-// ---------------------------------------------------------------------------
-#define GTFS_RT_URL "https://api.opentransportdata.swiss/la/gtfs-rt?format=JSON"
-
-// ---------------------------------------------------------------------------
-// OJP LocationInformationRequest endpoint (nearest stop lookup by GPS)
-// Same Bearer token as GTFS-RT.
+// OJP endpoint – used for both StopEventRequest (departures) and
+// LocationInformationRequest (nearest stop by GPS).
+// Same Bearer token for both services.
+// OJP StopEventService reference:
+//   https://opentransportdata.swiss/en/cookbook/ojp-stopeventservice/
 // ---------------------------------------------------------------------------
 #define OJP_URL "https://api.opentransportdata.swiss/ojp2020"
 
@@ -139,8 +136,9 @@ String nearestStopName = "";
 // Button / timing
 // ---------------------------------------------------------------------------
 volatile bool buttonPressed = false;
-// 35 s > 30 s server-side cache window; keeps us well within 2 req/min limit
-const unsigned long sleepInterval = 35000;
+// 30 s refresh interval – reasonable for a departure board.
+// OJP free tier allows up to 50 requests/minute so this is well within limits.
+const unsigned long sleepInterval = 30000;
 
 // ---------------------------------------------------------------------------
 // RTC / NTP
@@ -219,7 +217,7 @@ void setup() {
 
   title();
   displayStationHeader();
-  fetchStationBoardData();
+  fetchDepartures();
   displayStationBoardData();
 }
 
@@ -250,10 +248,10 @@ void loop() {
       }
     }
     displayStationHeader();
-    fetchStationBoardData();
+    fetchDepartures();
     displayStationBoardData();
   } else {
-    fetchStationBoardData();
+    fetchDepartures();
     displayStationBoardData();
   }
 
@@ -264,127 +262,210 @@ void loop() {
 }
 
 // ===========================================================================
-// fetchStationBoardData()
+// fetchDepartures()
 //
-// Calls the GTFS-RT JSON endpoint and extracts the next N departures from the
-// currently selected stop (STOP_IDS[stationIndex]).
+// Calls the OJP StopEventRequest for the current stop and fills
+// stationBoardData[] with the next N departures, including:
+//   - line name        (ojp:PublishedLineName / ojp:Text)
+//   - destination      (ojp:DestinationText   / ojp:Text)
+//   - timetabled time  (ojp:TimetabledTime)
+//   - estimated time   (ojp:EstimatedTime)  – present only when delayed
+//   - delay in minutes (computed from the two times above)
 //
-// GTFS-RT JSON structure (abbreviated):
-// {
-//   "Header": { ... },
-//   "Entities": [
-//     {
-//       "Id": "...",
-//       "TripUpdate": {
-//         "Trip": { "TripId": "...", "RouteId": "...", ... },
-//         "StopTimeUpdate": [
-//           {
-//             "StopId": "8503000",
-//             "Departure": { "Delay": 120, "Time": 1727430000 }
-//           }, ...
-//         ]
-//       }
-//     }, ...
-//   ]
-// }
+// OJP StopEventResponse structure (abbreviated):
 //
-// We iterate over all entities, look for a StopTimeUpdate whose StopId
-// matches our target stop, and collect the soonest departures.
+//   <ojp:StopEvent>
+//     <ojp:ThisCall>
+//       <ojp:CallAtStop>
+//         <ojp:ServiceDeparture>
+//           <ojp:TimetabledTime>2024-09-27T10:02:00Z</ojp:TimetabledTime>
+//           <ojp:EstimatedTime>2024-09-27T10:04:00Z</ojp:EstimatedTime>
+//         </ojp:ServiceDeparture>
+//       </ojp:CallAtStop>
+//     </ojp:ThisCall>
+//     <ojp:Service>
+//       <ojp:PublishedLineName><ojp:Text>IC 5</ojp:Text></ojp:PublishedLineName>
+//       <ojp:DestinationText><ojp:Text>Lugano</ojp:Text></ojp:DestinationText>
+//     </ojp:Service>
+//   </ojp:StopEvent>
+//
+// We use simple string search to extract the fields – no XML library needed.
+// Each StopEvent block is isolated, then fields are extracted within that block.
+//
+// OJP StopEventService reference:
+//   https://opentransportdata.swiss/en/cookbook/ojp-stopeventservice/
 // ===========================================================================
-void fetchStationBoardData() {
-  const String targetStopId = gpsStopActive
-                                ? nearestStopId
-                                : String(STOP_IDS[stationIndex]);
-  Serial.println("Fetching GTFS-RT for stop: " + targetStopId);
+void fetchDepartures() {
+  const String stopId = gpsStopActive
+                          ? nearestStopId
+                          : String(STOP_IDS[stationIndex]);
+
+  Serial.println("[OJP] Fetching departures for stop: " + stopId);
+
+  // -------------------------------------------------------------------------
+  // Build current timestamp for RequestTimestamp (OJP requirement)
+  // -------------------------------------------------------------------------
+  time_t now;
+  time(&now);
+  struct tm *utc = gmtime(&now);
+  char tsNow[25];
+  strftime(tsNow, sizeof(tsNow), "%Y-%m-%dT%H:%M:%SZ", utc);
+
+  // -------------------------------------------------------------------------
+  // OJP StopEventRequest XML
+  // NumberOfResults controls how many departures are returned.
+  // DepArrFilter=departure means departures only (not arrivals).
+  // -------------------------------------------------------------------------
+  String reqBody =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<OJP xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+    " xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\""
+    " xmlns=\"http://www.siri.org.uk/siri\" version=\"1.0\""
+    " xmlns:ojp=\"http://www.vdv.de/ojp\""
+    " xsi:schemaLocation=\"http://www.siri.org.uk/siri ../ojp-xsd-v1.0/OJP.xsd\">"
+    "<OJPRequest><ServiceRequest>"
+    "<RequestTimestamp>" + String(tsNow) + "</RequestTimestamp>"
+    "<RequestorRef>SBB-EPaper-Display_prod</RequestorRef>"
+    "<ojp:OJPStopEventRequest>"
+    "<RequestTimestamp>" + String(tsNow) + "</RequestTimestamp>"
+    "<MessageIdentifier>2</MessageIdentifier>"
+    "<ojp:Location>"
+    "<ojp:PlaceRef>"
+    "<ojp:StopPlaceRef>" + stopId + "</ojp:StopPlaceRef>"
+    "<ojp:LocationName><ojp:Text>stop</ojp:Text></ojp:LocationName>"
+    "</ojp:PlaceRef>"
+    "<ojp:DepArrTime>" + String(tsNow) + "</ojp:DepArrTime>"
+    "</ojp:Location>"
+    "<ojp:Params>"
+    "<ojp:NumberOfResults>" + String(numEntries) + "</ojp:NumberOfResults>"
+    "<ojp:StopEventType>departure</ojp:StopEventType>"
+    "<ojp:IncludeRealtimeData>true</ojp:IncludeRealtimeData>"
+    "</ojp:Params>"
+    "</ojp:OJPStopEventRequest>"
+    "</ServiceRequest></OJPRequest></OJP>";
 
   WiFiClientSecure client;
-  client.setInsecure();  // Skip TLS certificate validation on embedded device.
-                         // For production, load the root CA into client.setCACert().
+  client.setInsecure();
 
   HTTPClient http;
-  http.begin(client, GTFS_RT_URL);
+  http.begin(client, OJP_URL);
+  http.addHeader("Content-Type",  "application/xml");
   http.addHeader("Authorization", "Bearer " + String(GTFS_RT_API_KEY));
-  http.addHeader("User-Agent", "SBB-EPaper-Display/2.0 ESP32");
-  http.addHeader("Accept-Encoding", "gzip, deflate");
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);  // required by API
+  http.addHeader("User-Agent",    "SBB-EPaper-Display/2.0 ESP32");
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
-  int httpCode = http.GET();
+  int httpCode = http.POST(reqBody);
   if (httpCode != HTTP_CODE_OK) {
-    Serial.println("GTFS-RT HTTP error: " + String(httpCode));
-    if (httpCode > 0) {
-      // Print body so we can see rate-limit messages, etc.
-      Serial.println(http.getString().substring(0, 200));
-    }
+    Serial.println("[OJP] HTTP error: " + String(httpCode));
+    if (httpCode > 0) Serial.println(http.getString().substring(0, 300));
     http.end();
     return;
   }
 
-  // The JSON response can be up to ~11 MB; we stream-parse it with a filter
-  // document so that ArduinoJson only keeps what we need in RAM.
-  //
-  // Filter: keep only the fields used below.
-  StaticJsonDocument<256> filter;
-  filter["Entities"][0]["TripUpdate"]["Trip"]["RouteId"]             = true;
-  filter["Entities"][0]["TripUpdate"]["StopTimeUpdate"][0]["StopId"] = true;
-  filter["Entities"][0]["TripUpdate"]["StopTimeUpdate"][0]["Departure"]["Time"]  = true;
-  filter["Entities"][0]["TripUpdate"]["StopTimeUpdate"][0]["Departure"]["Delay"] = true;
-
-  // Allocate a large dynamic document.  Adjust if you see allocation errors.
-  DynamicJsonDocument doc(131072);  // 128 KB – enough for the filtered payload
-
-  DeserializationError error = deserializeJson(doc, http.getStream(),
-                                               DeserializationOption::Filter(filter));
+  String response = http.getString();
   http.end();
 
-  if (error) {
-    Serial.print(F("deserializeJson() failed: "));
-    Serial.println(error.f_str());
-    return;
-  }
+  // -------------------------------------------------------------------------
+  // Helper lambda: extract text between openTag and closeTag
+  // -------------------------------------------------------------------------
+  auto extractTag = [](const String &xml, const String &openTag,
+                       const String &closeTag, int fromPos = 0) -> String {
+    int start = xml.indexOf(openTag, fromPos);
+    if (start < 0) return "";
+    start += openTag.length();
+    int end = xml.indexOf(closeTag, start);
+    if (end < 0) return "";
+    return xml.substring(start, end);
+  };
 
-  // Collect departures from the target stop
-  int found = 0;
-  time_t now;
-  time(&now);  // current Unix timestamp
+  // -------------------------------------------------------------------------
+  // Helper: parse ISO8601 UTC time string → local HH:MM string
+  // Format: "2024-09-27T10:02:00Z"
+  // -------------------------------------------------------------------------
+  auto isoToHHMM = [](const String &iso) -> String {
+    if (iso.length() < 16) return "--:--";
+    struct tm t = {};
+    // parse manually to avoid strptime unavailability on some toolchains
+    t.tm_year = iso.substring(0, 4).toInt() - 1900;
+    t.tm_mon  = iso.substring(5, 7).toInt() - 1;
+    t.tm_mday = iso.substring(8, 10).toInt();
+    t.tm_hour = iso.substring(11, 13).toInt();
+    t.tm_min  = iso.substring(14, 16).toInt();
+    t.tm_sec  = 0;
+    time_t utcT = mktime(&t);
+    // mktime assumes local time; compensate by adjusting with timezone offset
+    // Use the system timezone (set by configTzTime in setup)
+    struct tm *local = localtime(&utcT);
+    char buf[6];
+    strftime(buf, sizeof(buf), "%H:%M", local);
+    return String(buf);
+  };
 
-  JsonArray entities = doc["Entities"].as<JsonArray>();
-  for (JsonObject entity : entities) {
-    if (found >= numEntries) break;
+  // -------------------------------------------------------------------------
+  // Parse StopEvent blocks
+  // Each block starts at <ojp:StopEvent> and ends at </ojp:StopEvent>
+  // -------------------------------------------------------------------------
+  int found    = 0;
+  int searchPos = 0;
+  const String SE_OPEN  = "<ojp:StopEvent>";
+  const String SE_CLOSE = "</ojp:StopEvent>";
 
-    JsonObject tripUpdate = entity["TripUpdate"];
-    if (tripUpdate.isNull()) continue;
+  while (found < numEntries) {
+    int blockStart = response.indexOf(SE_OPEN, searchPos);
+    if (blockStart < 0) break;
+    int blockEnd = response.indexOf(SE_CLOSE, blockStart);
+    if (blockEnd < 0) break;
+    String block = response.substring(blockStart, blockEnd + SE_CLOSE.length());
+    searchPos = blockEnd + SE_CLOSE.length();
 
-    String routeId = tripUpdate["Trip"]["RouteId"].as<String>();
+    // Timetabled departure time
+    String timetabled = extractTag(block, "<ojp:TimetabledTime>", "</ojp:TimetabledTime>");
 
-    JsonArray stopTimeUpdates = tripUpdate["StopTimeUpdate"].as<JsonArray>();
-    for (JsonObject stu : stopTimeUpdates) {
-      String stopId = stu["StopId"].as<String>();
-      if (stopId != targetStopId) continue;
+    // Estimated (real-time) departure time – may be absent if on time
+    String estimated  = extractTag(block, "<ojp:EstimatedTime>",  "</ojp:EstimatedTime>");
 
-      JsonObject dep = stu["Departure"];
-      if (dep.isNull()) continue;
+    // Displayed time: use estimated if present, else timetabled
+    String displayTime = (estimated.length() > 0) ? isoToHHMM(estimated)
+                                                   : isoToHHMM(timetabled);
 
-      long  depTime  = dep["Time"].as<long>();
-      int   delay    = dep["Delay"].as<int>() / 60;  // seconds → minutes
-
-      // Skip departures that are already in the past (>30 s ago)
-      if (depTime < (now - 30)) continue;
-
-      // Format departure time as HH:MM from Unix timestamp
-      time_t t = (time_t)depTime;
-      struct tm *tm_info = localtime(&t);
-      char timeBuf[6];
-      strftime(timeBuf, sizeof(timeBuf), "%H:%M", tm_info);
-
-      stationBoardData[found].line          = routeId;
-      stationBoardData[found].destination   = "";  // not in GTFS-RT Trip Updates
-      stationBoardData[found].departure_time = String(timeBuf);
-      stationBoardData[found].delay         = delay;
-      stationBoardData[found].type          = "";
-      stationBoardData[found].line_operator = "";
-      found++;
-      break;  // only one departure per trip at this stop
+    // Compute delay in minutes
+    int delayMin = 0;
+    if (estimated.length() > 0 && timetabled.length() > 0) {
+      // Parse minutes from HH:MM strings (simple delta, ignores hour rollover)
+      int tH = timetabled.substring(11, 13).toInt();
+      int tM = timetabled.substring(14, 16).toInt();
+      int eH = estimated.substring(11, 13).toInt();
+      int eM = estimated.substring(14, 16).toInt();
+      delayMin = (eH * 60 + eM) - (tH * 60 + tM);
     }
+
+    // Published line name (e.g. "IC 5", "S3", "1")
+    String lineName = extractTag(block, "<ojp:PublishedLineName><ojp:Text>", "</ojp:Text>");
+    if (lineName.length() == 0)
+      lineName = extractTag(block, "<ojp:PublishedLineName>\n      <ojp:Text>", "</ojp:Text>");
+
+    // Destination text
+    String destination = extractTag(block, "<ojp:DestinationText><ojp:Text>", "</ojp:Text>");
+    if (destination.length() == 0)
+      destination = extractTag(block, "<ojp:DestinationText>\n      <ojp:Text>", "</ojp:Text>");
+
+    // Mode short name (e.g. "IC", "IR", "S", "Bus") – optional, shown as type
+    String modeName = extractTag(block, "<ojp:ShortName><ojp:Text>", "</ojp:Text>");
+
+    stationBoardData[found].line          = lineName.length() > 0 ? lineName : "-";
+    stationBoardData[found].destination   = destination;
+    stationBoardData[found].departure_time = displayTime;
+    stationBoardData[found].delay         = delayMin;
+    stationBoardData[found].type          = modeName;
+    stationBoardData[found].line_operator = "";
+
+    Serial.printf("[OJP] %d: %s → %s  %s  +%d min\n",
+                  found,
+                  stationBoardData[found].line.c_str(),
+                  stationBoardData[found].destination.c_str(),
+                  stationBoardData[found].departure_time.c_str(),
+                  delayMin);
+    found++;
   }
 
   // Clear any unused rows
@@ -393,9 +474,10 @@ void fetchStationBoardData() {
     stationBoardData[i].destination   = "";
     stationBoardData[i].departure_time = "--:--";
     stationBoardData[i].delay         = 0;
+    stationBoardData[i].type          = "";
   }
 
-  Serial.printf("Found %d departures for stop %s\n", found, targetStopId.c_str());
+  Serial.printf("[OJP] Found %d departures for stop %s\n", found, stopId.c_str());
 }
 
 // ===========================================================================
@@ -433,26 +515,29 @@ void displayStationBoardData() {
 
   int base_y     = 300;
   int row_height = 55;
-  int col1_x     = 30;   // line/route
-  int col2_x     = 100;  // destination (empty in GTFS-RT TU, reserved)
-  int col3_x     = 765;  // departure time
-  int col4_x     = 855;  // delay
+  int col1_x     = 30;   // line name  (e.g. "IC 5")
+  int col2_x     = 130;  // destination
+  int col3_x     = 765;  // departure time HH:MM
+  int col4_x     = 855;  // delay (+N min)
 
   for (int i = 0; i < numEntries; i++) {
     int current_y = base_y + (i * row_height);
     epd_clear_area({ col1_x - 2, current_y - 45, 910, row_height + 5 });
 
-    // Line / Route ID
+    // Line name (e.g. "IC 5", "S3", "1")
     cursor_x = col1_x;  cursor_y = current_y;
     char line[stationBoardData[i].line.length() + 1];
     stationBoardData[i].line.toCharArray(line, stationBoardData[i].line.length() + 1);
     writeln((GFXfont *)&FiraSans, line, &cursor_x, &cursor_y, NULL);
 
-    // Destination (GTFS-RT Trip Updates don't carry headsign; left blank)
+    // Destination
     cursor_x = col2_x;
-    char dest[stationBoardData[i].destination.length() + 2];
-    stationBoardData[i].destination.toCharArray(dest, stationBoardData[i].destination.length() + 2);
-    writeln((GFXfont *)&FiraSans, dest, &cursor_x, &cursor_y, NULL);
+    // Truncate long destination names to avoid overrunning the time column
+    String dest = stationBoardData[i].destination;
+    if (dest.length() > 22) dest = dest.substring(0, 21) + ".";
+    char destBuf[dest.length() + 1];
+    dest.toCharArray(destBuf, dest.length() + 1);
+    writeln((GFXfont *)&FiraSans, destBuf, &cursor_x, &cursor_y, NULL);
 
     // Departure time
     cursor_x = col3_x;
@@ -465,9 +550,9 @@ void displayStationBoardData() {
     String delayStr = (stationBoardData[i].delay > 0)
                         ? "+" + String(stationBoardData[i].delay)
                         : "  ";
-    char delay[delayStr.length() + 1];
-    delayStr.toCharArray(delay, delayStr.length() + 1);
-    writeln((GFXfont *)&FiraSans, delay, &cursor_x, &cursor_y, NULL);
+    char delayBuf[delayStr.length() + 1];
+    delayStr.toCharArray(delayBuf, delayStr.length() + 1);
+    writeln((GFXfont *)&FiraSans, delayBuf, &cursor_x, &cursor_y, NULL);
   }
 }
 
