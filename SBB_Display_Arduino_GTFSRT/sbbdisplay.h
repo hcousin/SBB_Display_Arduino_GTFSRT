@@ -1,29 +1,34 @@
 /**
- * sbbdisplay.h
- *
- * @copyright Hervé Cousin (original), updated for GTFS-RT migration
+ * @copyright Hervé Cousin
  * @date      2024-07-12 / updated 2025
  *
- * Data structures used by the display sketch.
- *
- * GpsData has been removed: GPS-to-stop lookup is no longer used because
- * the new opentransportdata.swiss GTFS-RT API does not provide a nearby-
- * stop geocoding endpoint.  Stops are now configured statically in
- * credentials.h (STOP_IDS / STOP_NAMES).
+ * Structs use fixed char arrays instead of String objects to avoid
+ * heap corruption during global/static initialisation on the ESP32-S3.
  */
 
 #pragma once
 
-// ---------------------------------------------------------------------------
-// Station Board Data
-// One entry per departure row on the e-paper display.
-// ---------------------------------------------------------------------------
+#define MAX_STR 64   // max length for most string fields
+#define MAX_ID  16   // max length for stop IDs
+
+struct GpsData {
+  char x_coord[MAX_STR];
+  char y_coord[MAX_STR];
+  char pos_acc[MAX_STR];
+};
+
+struct StationData {
+  char gps_address  [MAX_STR];  // address at GPS fix  (shown after "GPS:")
+  char near_station [MAX_STR];  // stop name           (shown after "Haltestelle:")
+  int  distance;                // distance in metres
+  char station_id   [MAX_ID];   // OJP / GTFS stop_id  (e.g. "8503000")
+};
+
 struct StationBoardData {
-  String line_operator;   // Transport operator (not available in GTFS-RT TU)
-  String type;            // Vehicle type (not available in GTFS-RT TU)
-  String line;            // Route ID from GTFS-RT (e.g. "IC 5", "S3")
-  String destination;     // Headsign – not carried in GTFS-RT Trip Updates;
-                          // pair with GTFS Static trips.txt for full info
-  String departure_time;  // Scheduled departure + realtime offset, HH:MM
-  int    delay;           // Realtime delay in minutes (negative = early)
+  char line_operator [MAX_STR];
+  char type          [MAX_STR];
+  char line          [MAX_STR];
+  char destination   [MAX_STR];
+  char departure_time[8];       // "HH:MM\0"
+  int  delay;                   // minutes
 };

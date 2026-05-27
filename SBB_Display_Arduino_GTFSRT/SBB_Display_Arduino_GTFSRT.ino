@@ -1,47 +1,28 @@
 /**
- * @copyright Hervé Cousin (original), updated for GTFS-RT API
+ * @copyright Hervé Cousin (original), updated 2025 for OJP API
  * @date      2024-07-12 / updated 2025
  *
- * @note Migrated from transport.opendata.ch/v1 (discontinued) to
- *       opentransportdata.swiss OJP (Open Journey Planner) API.
+ * Migrated from transport.opendata.ch/v1 (discontinued) to
+ * opentransportdata.swiss OJP API.
  *
- *       API references:
- *         OJP StopEventService (departures + destination):
- *           https://opentransportdata.swiss/en/cookbook/ojp-stopeventservice/
- *         OJP LocationInformationRequest (nearest stop by GPS):
- *           https://opentransportdata.swiss/cookbook/ojplocationinformationrequest/
+ * Display layout is IDENTICAL to the original:
+ *   Row 1:  "GPS:"         <gps_address>
+ *   Row 2:  "Haltestelle:" <near_station> <distance> m
+ *   Row 3:  <time HH:MM>
+ *   Rows 4-7: <line>  <destination>  <HH:MM>  + <delay>
  *
- *       Key changes vs. original:
- *         - fetchStationBoardData() replaced by fetchDepartures() which calls the
- *           OJP StopEventRequest.  This returns destination (DestinationText),
- *           line name (PublishedLineName), timetabled departure and estimated
- *           (real-time) departure all in one XML response – no GTFS static join needed.
- *         - fetchNearestStop() added: obtains GPS fix and calls OJP
- *           LocationInformationRequest to resolve the nearest stop automatically.
- *         - All HTTP calls use HTTPS with Bearer token in Authorization header.
- *         - No GTFS-RT dependency; OJP covers both timetable and real-time data.
+ * Key fix vs previous version:
+ *   Struct members changed from String to char[] to prevent heap
+ *   corruption during global/static initialisation (boot crash).
  *
- *       How to obtain an API key:
- *         1. Register at https://api-manager.opentransportdata.swiss/
- *         2. Create an Application and subscribe to the "OJP" API (Default Key).
- *         3. Copy the Bearer token into GTFS_RT_API_KEY in credentials.h.
- *
- *       How to find your OJP stop IDs:
- *         IDs are the same as GTFS stop_ids (e.g. "8503000" for Zürich HB).
- *         Download stops.txt from https://data.opentransportdata.swiss/dataset/timetable-2026-gtfs2020
- *         or use fetchNearestStop() to resolve them automatically via GPS.
- *
- * @note Arduino IDE Settings
- *       Tools ->
- *             Board:"ESP32S3 Dev Module"
- *             USB CDC On Boot:"Enable"
- *             USB DFU On Boot:"Disable"
- *             Flash Size : "16MB(128Mb)"
- *             Flash Mode"QIO 80MHz
- *             Partition Scheme:"16M Flash(3M APP/9.9MB FATFS)"
- *             PSRAM:"OPI PSRAM"
- *             Upload Mode:"UART0/Hardware CDC"
- *             USB Mode:"Hardware CDC and JTAG"
+ * Arduino IDE Settings:
+ *   Board:            ESP32S3 Dev Module
+ *   USB CDC On Boot:  Enable
+ *   Flash Size:       16MB(128Mb)
+ *   Partition Scheme: 16M Flash(3M APP/9.9MB FATFS)
+ *   PSRAM:            OPI PSRAM
+ *   Upload Mode:      UART0/Hardware CDC
+ *   USB Mode:         Hardware CDC and JTAG
  */
 
 #include <WiFi.h>
@@ -57,13 +38,10 @@
 #include <Wire.h>
 #include <esp_sntp.h>
 #include <SensorPCF8563.hpp>
-#include <TinyGPSPlus.h>        // GPS parsing (TinyGPSPlus library)
-#include <HardwareSerial.h>     // UART for GPS module
-// WiFi credentials, API key and stop list
+#include <TinyGPSPlus.h>
+#include <HardwareSerial.h>
 #include "credentials.h"
 
-// Older versions of SensorLib did not export this constant publicly.
-// Define it here as a fallback so the sketch compiles with any library version.
 #ifndef PCF8563_SLAVE_ADDRESS
 #define PCF8563_SLAVE_ADDRESS 0x51
 #endif
@@ -71,85 +49,52 @@
 // ---------------------------------------------------------------------------
 // Pin definitions
 // ---------------------------------------------------------------------------
-#define BUTTON_1 (21)
-#define BATT_PIN (14)
-
-#define SD_MISO (16)
-#define SD_MOSI (15)
-#define SD_SCLK (11)
-#define SD_CS   (42)
-
+#define BUTTON_1  (21)
+#define BATT_PIN  (14)
 #define BOARD_SCL (17)
 #define BOARD_SDA (18)
 
-#define GPIO_MISO (45)
-#define GPIO_MOSI (10)
-#define GPIO_SCLK (48)
-#define GPIO_CS   (39)
+// GPS UART
+#define GPS_RX_PIN         (44)
+#define GPS_TX_PIN         (43)
+#define GPS_BAUD           (9600)
+#define GPS_SERIAL         Serial1
+#define GPS_FIX_TIMEOUT_MS (30000)
 
-// ---------------------------------------------------------------------------
-// OJP endpoint – used for both StopEventRequest (departures) and
-// LocationInformationRequest (nearest stop by GPS).
-// Same Bearer token for both services.
-// OJP StopEventService reference:
-//   https://opentransportdata.swiss/en/cookbook/ojp-stopeventservice/
-// ---------------------------------------------------------------------------
-#define OJP_URL "https://api.opentransportdata.swiss/ojp2020"
-
-// ---------------------------------------------------------------------------
-// GPS module UART pins (adjust to your wiring)
-// ---------------------------------------------------------------------------
-#define GPS_RX_PIN  (44)   // ESP32-S3 pin connected to GPS TX
-#define GPS_TX_PIN  (43)   // ESP32-S3 pin connected to GPS RX
-#define GPS_BAUD    (9600)
-#define GPS_SERIAL  Serial1
-
-// Radius (metres) passed to OJP GeoRestriction Circle
+// OJP
+#define OJP_URL      "https://api.opentransportdata.swiss/ojp2020"
 #define OJP_RADIUS_M 500
 
-// How long to wait for a GPS fix before giving up (ms)
-#define GPS_FIX_TIMEOUT_MS 30000
-
 // ---------------------------------------------------------------------------
-// Display
+// Globals
 // ---------------------------------------------------------------------------
 uint8_t *framebuffer;
 int vref = 1100;
 
-// ---------------------------------------------------------------------------
-// Station / board state
-// ---------------------------------------------------------------------------
-int  stationIndex = 0;                     // index into STOP_IDS[] / STOP_NAMES[]
-const int numEntries = 4;                  // rows shown on the departure board
-StationBoardData stationBoardData[numEntries];
-
-// ---------------------------------------------------------------------------
-// GPS / nearest-stop state
-// Dynamic stop (overrides the static list when a GPS fix is obtained)
-// ---------------------------------------------------------------------------
+// GPS
 TinyGPSPlus gps;
-bool  gpsStopActive  = false;   // true when nearestStopId was set by GPS lookup
-String nearestStopId   = "";
-String nearestStopName = "";
+GpsData gpsData;
+// Default coordinates (Glattpark, Opfikon) used when no GPS fix obtained
+char xCoord[32] = "47.421250255895124";
+char yCoord[32] = "8.562216925810933";
 
-// ---------------------------------------------------------------------------
-// Button / timing
-// ---------------------------------------------------------------------------
+// Station arrays
+int stationIndex = 1;
+const int maxStations = 10;
+StationData stationDataArray[maxStations];   // zero-initialised (global)
+const int numEntries = 4;
+StationBoardData stationBoardData[numEntries]; // zero-initialised (global)
+
+// Button
 volatile bool buttonPressed = false;
-// 30 s refresh interval – reasonable for a departure board.
-// OJP free tier allows up to 50 requests/minute so this is well within limits.
-const unsigned long sleepInterval = 30000;
+const unsigned long sleepInterval = 45000;
 
-// ---------------------------------------------------------------------------
 // RTC / NTP
-// ---------------------------------------------------------------------------
 SensorPCF8563 rtc;
 char buf[128];
-const char *ntpServer1       = "pool.ntp.org";
-const char *ntpServer2       = "time.nist.gov";
-const long  gmtOffset_sec    = 3600;
-const int   daylightOffset_sec = 3600;
-const char *time_zone        = "CET-1CEST,M3.5.0/2,M10.5.0/3";
+const char *ntpServer1     = "pool.ntp.org";
+const char *ntpServer2     = "time.nist.gov";
+const char *time_zone      = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 
 // ---------------------------------------------------------------------------
 // ISR
@@ -158,9 +103,6 @@ void IRAM_ATTR selectStationID() {
   buttonPressed = true;
 }
 
-// ---------------------------------------------------------------------------
-// NTP callback
-// ---------------------------------------------------------------------------
 void timeavailable(struct timeval *t) {
   Serial.println("[WiFi]: Got time adjustment from NTP!");
   rtc.hwClockWrite();
@@ -171,7 +113,6 @@ void timeavailable(struct timeval *t) {
 // ===========================================================================
 void setup() {
   Serial.begin(115200);
-
   connectWifi();
 
   pinMode(BUTTON_1, INPUT_PULLUP);
@@ -189,11 +130,19 @@ void setup() {
     Serial.println("RTC is online");
   }
 
+  // Try live GPS fix; updates xCoord/yCoord on success
+  GPS_SERIAL.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  fetchGPSFix();
+
+  strncpy(gpsData.x_coord, xCoord, sizeof(gpsData.x_coord) - 1);
+  strncpy(gpsData.y_coord, yCoord, sizeof(gpsData.y_coord) - 1);
+  strncpy(gpsData.pos_acc, "5m",   sizeof(gpsData.pos_acc)  - 1);
+
+  // ADC calibration
   esp_adc_cal_characteristics_t adc_chars;
   esp_adc_cal_value_t val_type = esp_adc_cal_characterize(
       ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
   if (val_type == ESP_ADC_CAL_VAL_EFUSE_VREF) {
-    Serial.printf("eFuse Vref:%u mV", adc_chars.vref);
     vref = adc_chars.vref;
   }
 
@@ -211,13 +160,10 @@ void setup() {
 
   Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
 
-  // Try GPS-based nearest stop first; fall back to static list if no fix
-  GPS_SERIAL.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-  fetchNearestStop();
-
+  fetchStationDataFromGPS();
   title();
-  displayStationHeader();
-  fetchDepartures();
+  displayStationData();
+  fetchStationBoardData();
   displayStationBoardData();
 }
 
@@ -227,31 +173,20 @@ void setup() {
 void loop() {
   struct tm timeinfo;
   rtc.getDateTime(&timeinfo);
-  strftime(buf, 64, "➸ %b %d %Y %H:%M:%S", &timeinfo);
-  Serial.print("RTC: ");
+  strftime(buf, sizeof(buf), "RTC: %b %d %Y %H:%M:%S", &timeinfo);
   Serial.println(buf);
 
   readBatVoltage();
   displayTime();
 
   if (buttonPressed) {
+    stationIndex = (stationIndex >= maxStations - 1) ? 1 : stationIndex + 1;
     buttonPressed = false;
-    if (gpsStopActive) {
-      // Second press: leave GPS mode, cycle to first static stop
-      gpsStopActive = false;
-      stationIndex  = 0;
-    } else {
-      // Cycle static list; when it wraps, try GPS again
-      stationIndex = (stationIndex + 1) % NUM_STOPS;
-      if (stationIndex == 0) {
-        fetchNearestStop();   // attempt fresh GPS fix at wrap-around
-      }
-    }
-    displayStationHeader();
-    fetchDepartures();
+    displayStationData();
+    fetchStationBoardData();
     displayStationBoardData();
   } else {
-    fetchDepartures();
+    fetchStationBoardData();
     displayStationBoardData();
   }
 
@@ -262,60 +197,170 @@ void loop() {
 }
 
 // ===========================================================================
-// fetchDepartures()
-//
-// Calls the OJP StopEventRequest for the current stop and fills
-// stationBoardData[] with the next N departures, including:
-//   - line name        (ojp:PublishedLineName / ojp:Text)
-//   - destination      (ojp:DestinationText   / ojp:Text)
-//   - timetabled time  (ojp:TimetabledTime)
-//   - estimated time   (ojp:EstimatedTime)  – present only when delayed
-//   - delay in minutes (computed from the two times above)
-//
-// OJP StopEventResponse structure (abbreviated):
-//
-//   <ojp:StopEvent>
-//     <ojp:ThisCall>
-//       <ojp:CallAtStop>
-//         <ojp:ServiceDeparture>
-//           <ojp:TimetabledTime>2024-09-27T10:02:00Z</ojp:TimetabledTime>
-//           <ojp:EstimatedTime>2024-09-27T10:04:00Z</ojp:EstimatedTime>
-//         </ojp:ServiceDeparture>
-//       </ojp:CallAtStop>
-//     </ojp:ThisCall>
-//     <ojp:Service>
-//       <ojp:PublishedLineName><ojp:Text>IC 5</ojp:Text></ojp:PublishedLineName>
-//       <ojp:DestinationText><ojp:Text>Lugano</ojp:Text></ojp:DestinationText>
-//     </ojp:Service>
-//   </ojp:StopEvent>
-//
-// We use simple string search to extract the fields – no XML library needed.
-// Each StopEvent block is isolated, then fields are extracted within that block.
-//
-// OJP StopEventService reference:
-//   https://opentransportdata.swiss/en/cookbook/ojp-stopeventservice/
+// fetchGPSFix()
 // ===========================================================================
-void fetchDepartures() {
-  const String stopId = gpsStopActive
-                          ? nearestStopId
-                          : String(STOP_IDS[stationIndex]);
+void fetchGPSFix() {
+  Serial.println("[GPS] Waiting for fix...");
+  unsigned long startMs = millis();
+  while (millis() - startMs < GPS_FIX_TIMEOUT_MS) {
+    while (GPS_SERIAL.available()) gps.encode(GPS_SERIAL.read());
+    if (gps.location.isValid() && gps.location.age() < 2000) {
+      snprintf(xCoord, sizeof(xCoord), "%.9f", gps.location.lat());
+      snprintf(yCoord, sizeof(yCoord), "%.9f", gps.location.lng());
+      Serial.printf("[GPS] Fix: lat=%s lng=%s\n", xCoord, yCoord);
+      return;
+    }
+    delay(100);
+  }
+  Serial.println("[GPS] No fix – using default coordinates.");
+}
 
-  Serial.println("[OJP] Fetching departures for stop: " + stopId);
+// ===========================================================================
+// fetchStationDataFromGPS()
+// OJP LocationInformationRequest – fills stationDataArray[]
+// ===========================================================================
+void fetchStationDataFromGPS() {
+  Serial.printf("[OJP] LocationInfo lat=%s lng=%s\n", xCoord, yCoord);
 
-  // -------------------------------------------------------------------------
-  // Build current timestamp for RequestTimestamp (OJP requirement)
-  // -------------------------------------------------------------------------
-  time_t now;
-  time(&now);
+  String reqBody =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    "<OJP xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+    " xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\""
+    " xmlns=\"http://www.siri.org.uk/siri\" version=\"1.0\""
+    " xmlns:ojp=\"http://www.vdv.de/ojp\""
+    " xsi:schemaLocation=\"http://www.siri.org.uk/siri ../ojp-xsd-v1.0/OJP.xsd\">"
+    "<OJPRequest><ServiceRequest>"
+    "<RequestTimestamp>2020-01-01T00:00:00Z</RequestTimestamp>"
+    "<RequestorRef>SBB-EPaper-Display_prod</RequestorRef>"
+    "<ojp:OJPLocationInformationRequest>"
+    "<RequestTimestamp>2020-01-01T00:00:00Z</RequestTimestamp>"
+    "<MessageIdentifier>1</MessageIdentifier>"
+    "<ojp:InitialInput>"
+    "<ojp:GeoRestriction><ojp:Circle>"
+    "<ojp:Center>"
+    "<Longitude>" + String(yCoord) + "</Longitude>"
+    "<Latitude>"  + String(xCoord) + "</Latitude>"
+    "</ojp:Center>"
+    "<ojp:Radius>" + String(OJP_RADIUS_M) + "</ojp:Radius>"
+    "</ojp:Circle></ojp:GeoRestriction>"
+    "</ojp:InitialInput>"
+    "<ojp:Restrictions>"
+    "<ojp:Type>stop</ojp:Type>"
+    "<ojp:NumberOfResults>" + String(maxStations) + "</ojp:NumberOfResults>"
+    "<ojp:IncludePtModes>false</ojp:IncludePtModes>"
+    "</ojp:Restrictions>"
+    "</ojp:OJPLocationInformationRequest>"
+    "</ServiceRequest></OJPRequest></OJP>";
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, OJP_URL);
+  http.addHeader("Content-Type",  "application/xml");
+  http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
+  http.addHeader("User-Agent",    "SBB-EPaper-Display/2.0 ESP32");
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+  int httpCode = http.POST(reqBody);
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[OJP] LocationInfo error %d\n", httpCode);
+    http.end();
+    return;
+  }
+
+  String response = http.getString();
+  http.end();
+
+  // Helper: extract text between tags
+  auto extractTag = [](const String &xml, const String &open,
+                       const String &close, int from = 0) -> String {
+    int s = xml.indexOf(open, from);
+    if (s < 0) return "";
+    s += open.length();
+    int e = xml.indexOf(close, s);
+    if (e < 0) return "";
+    return xml.substring(s, e);
+  };
+
+  // Haversine distance in metres
+  auto haversineM = [](double lat1, double lng1, double lat2, double lng2) -> int {
+    const double R = 6371000.0;
+    double dLat = (lat2 - lat1) * PI / 180.0;
+    double dLng = (lng2 - lng1) * PI / 180.0;
+    double a = sin(dLat/2)*sin(dLat/2) +
+               cos(lat1*PI/180.0)*cos(lat2*PI/180.0)*sin(dLng/2)*sin(dLng/2);
+    return (int)(R * 2.0 * atan2(sqrt(a), sqrt(1.0 - a)));
+  };
+
+  double myLat = atof(xCoord);
+  double myLng = atof(yCoord);
+
+  const String LOC_OPEN  = "<ojp:Location>";
+  const String LOC_CLOSE = "</ojp:Location>";
+  int found = 0, searchPos = 0;
+  char addressStation[MAX_STR] = "";
+
+  while (found < maxStations) {
+    int bs = response.indexOf(LOC_OPEN, searchPos);
+    if (bs < 0) break;
+    int be = response.indexOf(LOC_CLOSE, bs);
+    if (be < 0) break;
+    String block = response.substring(bs, be + LOC_CLOSE.length());
+    searchPos = be + LOC_CLOSE.length();
+
+    String stopRef  = extractTag(block, "<siri:StopPointRef>", "</siri:StopPointRef>");
+    String stopName = extractTag(block, "<ojp:LocationName><ojp:Text>", "</ojp:Text>");
+    if (stopName.length() == 0)
+      stopName = extractTag(block, "<ojp:Text>", "</ojp:Text>");
+    String latStr = extractTag(block, "<siri:Latitude>",  "</siri:Latitude>");
+    String lngStr = extractTag(block, "<siri:Longitude>", "</siri:Longitude>");
+
+    if (stopRef.length() == 0 || stopName.length() == 0) continue;
+
+    if (found == 0) strncpy(addressStation, stopName.c_str(), MAX_STR - 1);
+
+    double stopLat = latStr.toDouble();
+    double stopLng = lngStr.toDouble();
+    int dist = (stopLat != 0.0 && stopLng != 0.0)
+                 ? haversineM(myLat, myLng, stopLat, stopLng) : 0;
+
+    strncpy(stationDataArray[found].gps_address,  addressStation,      MAX_STR - 1);
+    strncpy(stationDataArray[found].near_station, stopName.c_str(),    MAX_STR - 1);
+    strncpy(stationDataArray[found].station_id,   stopRef.c_str(),     MAX_ID  - 1);
+    stationDataArray[found].distance = dist;
+
+    Serial.printf("[OJP] Stop %d: %s  id=%s  dist=%dm\n",
+                  found, stopName.c_str(), stopRef.c_str(), dist);
+    found++;
+  }
+
+  if (found == 0) {
+    Serial.println("[OJP] No stops found.");
+    return;
+  }
+  Serial.printf("[OJP] Active stop: %s  id=%s\n",
+                stationDataArray[stationIndex].near_station,
+                stationDataArray[stationIndex].station_id);
+}
+
+// ===========================================================================
+// fetchStationBoardData()
+// OJP StopEventRequest – fills stationBoardData[]
+// ===========================================================================
+void fetchStationBoardData() {
+  if (strlen(stationDataArray[stationIndex].station_id) == 0) {
+    Serial.println("[OJP] No station ID – skipping");
+    return;
+  }
+
+  const char *stopId = stationDataArray[stationIndex].station_id;
+  Serial.printf("[OJP] StopEvent for stop: %s\n", stopId);
+
+  time_t now; time(&now);
   struct tm *utc = gmtime(&now);
   char tsNow[25];
   strftime(tsNow, sizeof(tsNow), "%Y-%m-%dT%H:%M:%SZ", utc);
 
-  // -------------------------------------------------------------------------
-  // OJP StopEventRequest XML
-  // NumberOfResults controls how many departures are returned.
-  // DepArrFilter=departure means departures only (not arrivals).
-  // -------------------------------------------------------------------------
   String reqBody =
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
     "<OJP xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
@@ -331,7 +376,7 @@ void fetchDepartures() {
     "<MessageIdentifier>2</MessageIdentifier>"
     "<ojp:Location>"
     "<ojp:PlaceRef>"
-    "<ojp:StopPlaceRef>" + stopId + "</ojp:StopPlaceRef>"
+    "<ojp:StopPlaceRef>" + String(stopId) + "</ojp:StopPlaceRef>"
     "<ojp:LocationName><ojp:Text>stop</ojp:Text></ojp:LocationName>"
     "</ojp:PlaceRef>"
     "<ojp:DepArrTime>" + String(tsNow) + "</ojp:DepArrTime>"
@@ -346,17 +391,16 @@ void fetchDepartures() {
 
   WiFiClientSecure client;
   client.setInsecure();
-
   HTTPClient http;
   http.begin(client, OJP_URL);
   http.addHeader("Content-Type",  "application/xml");
-  http.addHeader("Authorization", "Bearer " + String(GTFS_RT_API_KEY));
+  http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
   http.addHeader("User-Agent",    "SBB-EPaper-Display/2.0 ESP32");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
   int httpCode = http.POST(reqBody);
   if (httpCode != HTTP_CODE_OK) {
-    Serial.println("[OJP] HTTP error: " + String(httpCode));
+    Serial.printf("[OJP] StopEvent error %d\n", httpCode);
     if (httpCode > 0) Serial.println(http.getString().substring(0, 300));
     http.end();
     return;
@@ -365,356 +409,198 @@ void fetchDepartures() {
   String response = http.getString();
   http.end();
 
-  // -------------------------------------------------------------------------
-  // Helper lambda: extract text between openTag and closeTag
-  // -------------------------------------------------------------------------
-  auto extractTag = [](const String &xml, const String &openTag,
-                       const String &closeTag, int fromPos = 0) -> String {
-    int start = xml.indexOf(openTag, fromPos);
-    if (start < 0) return "";
-    start += openTag.length();
-    int end = xml.indexOf(closeTag, start);
-    if (end < 0) return "";
-    return xml.substring(start, end);
+  auto extractTag = [](const String &xml, const String &open,
+                       const String &close, int from = 0) -> String {
+    int s = xml.indexOf(open, from);
+    if (s < 0) return "";
+    s += open.length();
+    int e = xml.indexOf(close, s);
+    if (e < 0) return "";
+    return xml.substring(s, e);
   };
 
-  // -------------------------------------------------------------------------
-  // Helper: parse ISO8601 UTC time string → local HH:MM string
-  // Format: "2024-09-27T10:02:00Z"
-  // -------------------------------------------------------------------------
-  auto isoToHHMM = [](const String &iso) -> String {
-    if (iso.length() < 16) return "--:--";
+  // ISO8601 UTC → local HH:MM
+  auto isoToHHMM = [](const String &iso, char *out, size_t outLen) {
+    if (iso.length() < 16) { strncpy(out, "--:--", outLen); return; }
     struct tm t = {};
-    // parse manually to avoid strptime unavailability on some toolchains
-    t.tm_year = iso.substring(0, 4).toInt() - 1900;
-    t.tm_mon  = iso.substring(5, 7).toInt() - 1;
-    t.tm_mday = iso.substring(8, 10).toInt();
-    t.tm_hour = iso.substring(11, 13).toInt();
-    t.tm_min  = iso.substring(14, 16).toInt();
+    t.tm_year = iso.substring(0,4).toInt() - 1900;
+    t.tm_mon  = iso.substring(5,7).toInt() - 1;
+    t.tm_mday = iso.substring(8,10).toInt();
+    t.tm_hour = iso.substring(11,13).toInt();
+    t.tm_min  = iso.substring(14,16).toInt();
     t.tm_sec  = 0;
+    t.tm_isdst = -1;
     time_t utcT = mktime(&t);
-    // mktime assumes local time; compensate by adjusting with timezone offset
-    // Use the system timezone (set by configTzTime in setup)
     struct tm *local = localtime(&utcT);
-    char buf[6];
-    strftime(buf, sizeof(buf), "%H:%M", local);
-    return String(buf);
+    strftime(out, outLen, "%H:%M", local);
   };
 
-  // -------------------------------------------------------------------------
-  // Parse StopEvent blocks
-  // Each block starts at <ojp:StopEvent> and ends at </ojp:StopEvent>
-  // -------------------------------------------------------------------------
-  int found    = 0;
-  int searchPos = 0;
   const String SE_OPEN  = "<ojp:StopEvent>";
   const String SE_CLOSE = "</ojp:StopEvent>";
+  int found = 0, searchPos = 0;
 
   while (found < numEntries) {
-    int blockStart = response.indexOf(SE_OPEN, searchPos);
-    if (blockStart < 0) break;
-    int blockEnd = response.indexOf(SE_CLOSE, blockStart);
-    if (blockEnd < 0) break;
-    String block = response.substring(blockStart, blockEnd + SE_CLOSE.length());
-    searchPos = blockEnd + SE_CLOSE.length();
+    int bs = response.indexOf(SE_OPEN, searchPos);
+    if (bs < 0) break;
+    int be = response.indexOf(SE_CLOSE, bs);
+    if (be < 0) break;
+    String block = response.substring(bs, be + SE_CLOSE.length());
+    searchPos = be + SE_CLOSE.length();
 
-    // Timetabled departure time
     String timetabled = extractTag(block, "<ojp:TimetabledTime>", "</ojp:TimetabledTime>");
-
-    // Estimated (real-time) departure time – may be absent if on time
     String estimated  = extractTag(block, "<ojp:EstimatedTime>",  "</ojp:EstimatedTime>");
 
-    // Displayed time: use estimated if present, else timetabled
-    String displayTime = (estimated.length() > 0) ? isoToHHMM(estimated)
-                                                   : isoToHHMM(timetabled);
+    char depTimeBuf[8];
+    isoToHHMM((estimated.length() > 0) ? estimated : timetabled,
+              depTimeBuf, sizeof(depTimeBuf));
 
-    // Compute delay in minutes
     int delayMin = 0;
     if (estimated.length() > 0 && timetabled.length() > 0) {
-      // Parse minutes from HH:MM strings (simple delta, ignores hour rollover)
-      int tH = timetabled.substring(11, 13).toInt();
-      int tM = timetabled.substring(14, 16).toInt();
-      int eH = estimated.substring(11, 13).toInt();
-      int eM = estimated.substring(14, 16).toInt();
+      int tH = timetabled.substring(11,13).toInt();
+      int tM = timetabled.substring(14,16).toInt();
+      int eH = estimated.substring(11,13).toInt();
+      int eM = estimated.substring(14,16).toInt();
       delayMin = (eH * 60 + eM) - (tH * 60 + tM);
+      if (delayMin < 0) delayMin += 1440;
     }
 
-    // Published line name (e.g. "IC 5", "S3", "1")
+    // Line name – try both compact and whitespace variants
     String lineName = extractTag(block, "<ojp:PublishedLineName><ojp:Text>", "</ojp:Text>");
     if (lineName.length() == 0)
       lineName = extractTag(block, "<ojp:PublishedLineName>\n      <ojp:Text>", "</ojp:Text>");
 
-    // Destination text
-    String destination = extractTag(block, "<ojp:DestinationText><ojp:Text>", "</ojp:Text>");
-    if (destination.length() == 0)
-      destination = extractTag(block, "<ojp:DestinationText>\n      <ojp:Text>", "</ojp:Text>");
+    // Destination
+    String dest = extractTag(block, "<ojp:DestinationText><ojp:Text>", "</ojp:Text>");
+    if (dest.length() == 0)
+      dest = extractTag(block, "<ojp:DestinationText>\n      <ojp:Text>", "</ojp:Text>");
 
-    // Mode short name (e.g. "IC", "IR", "S", "Bus") – optional, shown as type
-    String modeName = extractTag(block, "<ojp:ShortName><ojp:Text>", "</ojp:Text>");
+    String mode = extractTag(block, "<ojp:ShortName><ojp:Text>", "</ojp:Text>");
 
-    stationBoardData[found].line          = lineName.length() > 0 ? lineName : "-";
-    stationBoardData[found].destination   = destination;
-    stationBoardData[found].departure_time = displayTime;
+    strncpy(stationBoardData[found].line,          lineName.c_str(), MAX_STR - 1);
+    strncpy(stationBoardData[found].destination,   dest.c_str(),     MAX_STR - 1);
+    strncpy(stationBoardData[found].departure_time, depTimeBuf,      7);
+    strncpy(stationBoardData[found].type,          mode.c_str(),     MAX_STR - 1);
     stationBoardData[found].delay         = delayMin;
-    stationBoardData[found].type          = modeName;
-    stationBoardData[found].line_operator = "";
+    stationBoardData[found].line_operator[0] = '\0';
 
-    Serial.printf("[OJP] %d: %s → %s  %s  +%d min\n",
+    Serial.printf("[OJP] %d: %s → %s  %s  +%d\n",
                   found,
-                  stationBoardData[found].line.c_str(),
-                  stationBoardData[found].destination.c_str(),
-                  stationBoardData[found].departure_time.c_str(),
+                  stationBoardData[found].line,
+                  stationBoardData[found].destination,
+                  stationBoardData[found].departure_time,
                   delayMin);
     found++;
   }
 
-  // Clear any unused rows
+  // Clear unused rows
   for (int i = found; i < numEntries; i++) {
-    stationBoardData[i].line          = "-";
-    stationBoardData[i].destination   = "";
-    stationBoardData[i].departure_time = "--:--";
-    stationBoardData[i].delay         = 0;
-    stationBoardData[i].type          = "";
+    strncpy(stationBoardData[i].line,           "-",     MAX_STR - 1);
+    strncpy(stationBoardData[i].destination,    "",      MAX_STR - 1);
+    strncpy(stationBoardData[i].departure_time, "--:--", 7);
+    stationBoardData[i].delay = 0;
   }
-
-  Serial.printf("[OJP] Found %d departures for stop %s\n", found, stopId.c_str());
 }
 
 // ===========================================================================
-// Display helpers
+// readBatVoltage() – unchanged from original
 // ===========================================================================
-
 void readBatVoltage() {
   delay(10);
   uint16_t v = analogRead(BATT_PIN);
   float battery_voltage = ((float)v / 4095.0) * 2.0 * 3.3 * (vref / 1000.0);
   if (battery_voltage >= 4.2) battery_voltage = 4.2;
-  Serial.println("➸ Voltage: " + String(battery_voltage) + "V");
+  Serial.println("Voltage: " + String(battery_voltage) + "V");
 }
 
+// ===========================================================================
+// title() – UNCHANGED from original
+// ===========================================================================
 void title() {
   int32_t cursor_x, cursor_y;
-
-  cursor_x = 30;  cursor_y = 50;
-  writeln((GFXfont *)&FiraSans, (char *)"Abfahrt:", &cursor_x, &cursor_y, NULL);
+  cursor_x = 30; cursor_y = 50;
+  writeln((GFXfont *)&FiraSans, (char *)"GPS: ", &cursor_x, &cursor_y, NULL);
+  cursor_x = 30; cursor_y = 200;
+  writeln((GFXfont *)&FiraSans, (char *)"Haltestelle: ", &cursor_x, &cursor_y, NULL);
 }
 
-// Show the current stop name on the display
-void displayStationHeader() {
-  epd_clear_area({ 250, 10, 700, 50 });
-
-  int32_t cursor_x = 250, cursor_y = 50;
-  String label = gpsStopActive ? nearestStopName : String(STOP_NAMES[stationIndex]);
-  char buf_local[label.length() + 1];
-  label.toCharArray(buf_local, label.length() + 1);
-  writeln((GFXfont *)&FiraSans, buf_local, &cursor_x, &cursor_y, NULL);
-}
-
-void displayStationBoardData() {
+// ===========================================================================
+// displayStationData() – UNCHANGED from original
+// ===========================================================================
+void displayStationData() {
   int32_t cursor_x, cursor_y;
 
-  int base_y     = 300;
-  int row_height = 55;
-  int col1_x     = 30;   // line name  (e.g. "IC 5")
-  int col2_x     = 130;  // destination
-  int col3_x     = 765;  // departure time HH:MM
-  int col4_x     = 855;  // delay (+N min)
+  epd_clear_area({ 250, 10,  700, 50 });
+  epd_clear_area({ 250, 160, 700, 50 });
+
+  cursor_x = 250; cursor_y = 50;
+  writeln((GFXfont *)&FiraSans,
+          stationDataArray[stationIndex].gps_address,
+          &cursor_x, &cursor_y, NULL);
+
+  cursor_x = 250; cursor_y = 200;
+  char nst[MAX_STR + 16];
+  snprintf(nst, sizeof(nst), "%s %d m",
+           stationDataArray[stationIndex].near_station,
+           stationDataArray[stationIndex].distance);
+  writeln((GFXfont *)&FiraSans, nst, &cursor_x, &cursor_y, NULL);
+}
+
+// ===========================================================================
+// displayStationBoardData() – UNCHANGED from original
+// ===========================================================================
+void displayStationBoardData() {
+  int32_t cursor_x, cursor_y;
+  const int base_y     = 300;
+  const int row_height = 55;
+  const int col1_x     = 30;
+  const int col2_x     = 100;
+  const int col3_x     = 765;
+  const int col4_x     = 855;
 
   for (int i = 0; i < numEntries; i++) {
     int current_y = base_y + (i * row_height);
     epd_clear_area({ col1_x - 2, current_y - 45, 910, row_height + 5 });
 
-    // Line name (e.g. "IC 5", "S3", "1")
-    cursor_x = col1_x;  cursor_y = current_y;
-    char line[stationBoardData[i].line.length() + 1];
-    stationBoardData[i].line.toCharArray(line, stationBoardData[i].line.length() + 1);
-    writeln((GFXfont *)&FiraSans, line, &cursor_x, &cursor_y, NULL);
+    cursor_x = col1_x; cursor_y = current_y;
+    writeln((GFXfont *)&FiraSans, stationBoardData[i].line,
+            &cursor_x, &cursor_y, NULL);
 
-    // Destination
     cursor_x = col2_x;
-    // Truncate long destination names to avoid overrunning the time column
-    String dest = stationBoardData[i].destination;
-    if (dest.length() > 22) dest = dest.substring(0, 21) + ".";
-    char destBuf[dest.length() + 1];
-    dest.toCharArray(destBuf, dest.length() + 1);
-    writeln((GFXfont *)&FiraSans, destBuf, &cursor_x, &cursor_y, NULL);
+    writeln((GFXfont *)&FiraSans, stationBoardData[i].destination,
+            &cursor_x, &cursor_y, NULL);
 
-    // Departure time
     cursor_x = col3_x;
-    char depTime[stationBoardData[i].departure_time.length() + 1];
-    stationBoardData[i].departure_time.toCharArray(depTime, stationBoardData[i].departure_time.length() + 1);
-    writeln((GFXfont *)&FiraSans, depTime, &cursor_x, &cursor_y, NULL);
+    writeln((GFXfont *)&FiraSans, stationBoardData[i].departure_time,
+            &cursor_x, &cursor_y, NULL);
 
-    // Delay (only display if non-zero)
     cursor_x = col4_x;
-    String delayStr = (stationBoardData[i].delay > 0)
-                        ? "+" + String(stationBoardData[i].delay)
-                        : "  ";
-    char delayBuf[delayStr.length() + 1];
-    delayStr.toCharArray(delayBuf, delayStr.length() + 1);
-    writeln((GFXfont *)&FiraSans, delayBuf, &cursor_x, &cursor_y, NULL);
+    char delayStr[12];
+    snprintf(delayStr, sizeof(delayStr), " + %d", stationBoardData[i].delay);
+    writeln((GFXfont *)&FiraSans, delayStr, &cursor_x, &cursor_y, NULL);
   }
 }
 
+// ===========================================================================
+// displayTime() – UNCHANGED from original
+// ===========================================================================
 void displayTime() {
   int32_t cursor_x = 500, cursor_y = 100;
-  int col_x = (int)cursor_x, col_y = (int)cursor_y;
-  int row_height = 50;
+  Rect_t clearRect = { 498, 55, 125, 55 };
+  epd_clear_area(clearRect);
 
   struct tm timeInfo;
   rtc.getDateTime(&timeInfo);
-
-  Rect_t clearRect = { col_x - 2, col_y - 45, 125, row_height + 5 };
-  epd_clear_area(clearRect);
-
   char timeBuffer[6];
   strftime(timeBuffer, sizeof(timeBuffer), "%H:%M", &timeInfo);
   writeln((GFXfont *)&FiraSans, timeBuffer, &cursor_x, &cursor_y, NULL);
 }
 
 // ===========================================================================
-// fetchNearestStop()
-//
-// 1. Reads NMEA sentences from the GPS module until a valid fix is obtained
-//    (or GPS_FIX_TIMEOUT_MS elapses).
-// 2. Sends an OJP LocationInformationRequest (XML/POST) to the OJP API with
-//    the GPS coordinates and a GeoRestriction Circle of OJP_RADIUS_M metres.
-// 3. Parses the first StopPointRef and its LocationName from the XML response
-//    using simple string search – no full XML library needed on the ESP32.
-// 4. On success, sets gpsStopActive=true and stores nearestStopId / Name.
-//    On failure (no fix, HTTP error, parse error) leaves the static stop list
-//    in effect.
-//
-// OJP API reference:
-//   https://opentransportdata.swiss/cookbook/ojplocationinformationrequest/
-// ===========================================================================
-void fetchNearestStop() {
-  Serial.println("[GPS] Waiting for fix...");
-
-  double lat = 0.0, lng = 0.0;
-  bool   fixOk = false;
-  unsigned long startMs = millis();
-
-  while (millis() - startMs < GPS_FIX_TIMEOUT_MS) {
-    while (GPS_SERIAL.available()) {
-      gps.encode(GPS_SERIAL.read());
-    }
-    if (gps.location.isValid() && gps.location.age() < 2000) {
-      lat   = gps.location.lat();
-      lng   = gps.location.lng();
-      fixOk = true;
-      break;
-    }
-    delay(100);
-  }
-
-  if (!fixOk) {
-    Serial.println("[GPS] No fix – using static stop list.");
-    gpsStopActive = false;
-    return;
-  }
-
-  Serial.printf("[GPS] Fix: lat=%.6f lng=%.6f\n", lat, lng);
-
-  // -------------------------------------------------------------------------
-  // Build OJP LocationInformationRequest XML
-  // Uses GeoRestriction/Circle so the server returns the nearest stops.
-  // RequestorRef must end in _prod / _int / _test per API convention.
-  // -------------------------------------------------------------------------
-  String reqBody =
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-    "<OJP xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
-    " xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\""
-    " xmlns=\"http://www.siri.org.uk/siri\" version=\"1.0\""
-    " xmlns:ojp=\"http://www.vdv.de/ojp\""
-    " xsi:schemaLocation=\"http://www.siri.org.uk/siri ../ojp-xsd-v1.0/OJP.xsd\">"
-    "<OJPRequest><ServiceRequest>"
-    "<RequestTimestamp>2020-01-01T00:00:00Z</RequestTimestamp>"
-    "<RequestorRef>SBB-EPaper-Display_prod</RequestorRef>"
-    "<ojp:OJPLocationInformationRequest>"
-    "<RequestTimestamp>2020-01-01T00:00:00Z</RequestTimestamp>"
-    "<MessageIdentifier>1</MessageIdentifier>"
-    "<ojp:InitialInput>"
-    "<ojp:GeoRestriction>"
-    "<ojp:Circle>"
-    "<ojp:Center>"
-    "<Longitude>" + String(lng, 6) + "</Longitude>"
-    "<Latitude>"  + String(lat, 6) + "</Latitude>"
-    "</ojp:Center>"
-    "<ojp:Radius>" + String(OJP_RADIUS_M) + "</ojp:Radius>"
-    "</ojp:Circle>"
-    "</ojp:GeoRestriction>"
-    "</ojp:InitialInput>"
-    "<ojp:Restrictions>"
-    "<ojp:Type>stop</ojp:Type>"
-    "<ojp:NumberOfResults>1</ojp:NumberOfResults>"
-    "<ojp:IncludePtModes>false</ojp:IncludePtModes>"
-    "</ojp:Restrictions>"
-    "</ojp:OJPLocationInformationRequest>"
-    "</ServiceRequest></OJPRequest></OJP>";
-
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  HTTPClient http;
-  http.begin(client, OJP_URL);
-  http.addHeader("Content-Type",  "application/xml");
-  http.addHeader("Authorization", "Bearer " + String(GTFS_RT_API_KEY));
-  http.addHeader("User-Agent",    "SBB-EPaper-Display/2.0 ESP32");
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-
-  int httpCode = http.POST(reqBody);
-  if (httpCode != HTTP_CODE_OK) {
-    Serial.println("[OJP] HTTP error: " + String(httpCode));
-    http.end();
-    gpsStopActive = false;
-    return;
-  }
-
-  String response = http.getString();
-  http.end();
-
-  // -------------------------------------------------------------------------
-  // Lightweight XML parse: extract first StopPointRef and LocationName text.
-  //
-  // Response snippet we're looking for:
-  //   <siri:StopPointRef>8503000</siri:StopPointRef>
-  //   ...
-  //   <ojp:LocationName><ojp:Text>Zürich HB</ojp:Text></ojp:LocationName>
-  // -------------------------------------------------------------------------
-  auto extractTag = [](const String &xml, const String &openTag, const String &closeTag) -> String {
-    int start = xml.indexOf(openTag);
-    if (start < 0) return "";
-    start += openTag.length();
-    int end = xml.indexOf(closeTag, start);
-    if (end < 0) return "";
-    return xml.substring(start, end);
-  };
-
-  String stopRef  = extractTag(response, "<siri:StopPointRef>", "</siri:StopPointRef>");
-  String stopName = extractTag(response, "<ojp:Text>",          "</ojp:Text>");
-
-  if (stopRef.length() == 0) {
-    Serial.println("[OJP] Could not parse StopPointRef – keeping static list.");
-    gpsStopActive = false;
-    return;
-  }
-
-  nearestStopId   = stopRef;
-  nearestStopName = (stopName.length() > 0) ? stopName : stopRef;
-  gpsStopActive   = true;
-
-  Serial.println("[OJP] Nearest stop: " + nearestStopName + " (" + nearestStopId + ")");
-}
-
+// connectWifi() – UNCHANGED from original
 // ===========================================================================
 void connectWifi() {
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
+  Serial.println("Connecting to WiFi...");
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.println("\nWiFi connected – IP: " + WiFi.localIP().toString());
 }
