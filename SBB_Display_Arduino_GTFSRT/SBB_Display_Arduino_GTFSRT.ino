@@ -71,8 +71,8 @@
 uint8_t *framebuffer;
 int vref = 1100;
 
-// GPS
-TinyGPSPlus gps;
+// GPS – pointer, created in setup() to avoid constructor running before heap
+TinyGPSPlus *gps = nullptr;
 GpsData gpsData;
 // Default coordinates (Glattpark, Opfikon) used when no GPS fix obtained
 char xCoord[32] = "47.421250255895124";
@@ -89,8 +89,8 @@ StationBoardData stationBoardData[numEntries]; // zero-initialised (global)
 volatile bool buttonPressed = false;
 const unsigned long sleepInterval = 45000;
 
-// RTC / NTP
-SensorPCF8563 rtc;
+// RTC – pointer, created in setup()
+SensorPCF8563 *rtc = nullptr;
 char buf[128];
 const char *ntpServer1     = "pool.ntp.org";
 const char *ntpServer2     = "time.nist.gov";
@@ -105,7 +105,7 @@ void IRAM_ATTR selectStationID() {
 
 void timeavailable(struct timeval *t) {
   Serial.println("[WiFi]: Got time adjustment from NTP!");
-  rtc.hwClockWrite();
+  rtc->hwClockWrite();
 }
 
 // ===========================================================================
@@ -113,6 +113,11 @@ void timeavailable(struct timeval *t) {
 // ===========================================================================
 void setup() {
   Serial.begin(115200);
+
+  // Create C++ objects here, after heap is ready
+  rtc = new SensorPCF8563();
+  gps = new TinyGPSPlus();
+
   connectWifi();
 
   pinMode(BUTTON_1, INPUT_PULLUP);
@@ -124,7 +129,7 @@ void setup() {
   Wire.begin(BOARD_SDA, BOARD_SCL);
   Wire.beginTransmission(PCF8563_SLAVE_ADDRESS);
   if (Wire.endTransmission() == 0) {
-    rtc.begin(Wire, PCF8563_SLAVE_ADDRESS, BOARD_SDA, BOARD_SCL);
+    rtc->begin(Wire, PCF8563_SLAVE_ADDRESS, BOARD_SDA, BOARD_SCL);
     Serial.println("RTC initialization failed!");
   } else {
     Serial.println("RTC is online");
@@ -172,7 +177,7 @@ void setup() {
 // ===========================================================================
 void loop() {
   struct tm timeinfo;
-  rtc.getDateTime(&timeinfo);
+  rtc->getDateTime(&timeinfo);
   strftime(buf, sizeof(buf), "RTC: %b %d %Y %H:%M:%S", &timeinfo);
   Serial.println(buf);
 
@@ -203,10 +208,10 @@ void fetchGPSFix() {
   Serial.println("[GPS] Waiting for fix...");
   unsigned long startMs = millis();
   while (millis() - startMs < GPS_FIX_TIMEOUT_MS) {
-    while (GPS_SERIAL.available()) gps.encode(GPS_SERIAL.read());
-    if (gps.location.isValid() && gps.location.age() < 2000) {
-      snprintf(xCoord, sizeof(xCoord), "%.9f", gps.location.lat());
-      snprintf(yCoord, sizeof(yCoord), "%.9f", gps.location.lng());
+    while (GPS_SERIAL.available()) gps->encode(GPS_SERIAL.read());
+    if (gps->location.isValid() && gps->location.age() < 2000) {
+      snprintf(xCoord, sizeof(xCoord), "%.9f", gps->location.lat());
+      snprintf(yCoord, sizeof(yCoord), "%.9f", gps->location.lng());
       Serial.printf("[GPS] Fix: lat=%s lng=%s\n", xCoord, yCoord);
       return;
     }
@@ -589,7 +594,7 @@ void displayTime() {
   epd_clear_area(clearRect);
 
   struct tm timeInfo;
-  rtc.getDateTime(&timeInfo);
+  rtc->getDateTime(&timeInfo);
   char timeBuffer[6];
   strftime(timeBuffer, sizeof(timeBuffer), "%H:%M", &timeInfo);
   writeln((GFXfont *)&FiraSans, timeBuffer, &cursor_x, &cursor_y, NULL);
