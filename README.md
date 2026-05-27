@@ -61,7 +61,7 @@ const int   NUM_STOPS    = 2;
   To show it, you would need to download GTFS Static `trips.txt` and join
   on `trip_id` – not practical on the ESP32.  The destination column is left
   blank for now.
-- **GPS-based stop discovery** has been removed.  Use the static stop list.
+- **GPS-based stop discovery** is implemented via `fetchNearestStop()`, which uses the OJP `LocationInformationRequest` API. On startup the device waits up to 30 s for a GPS fix, then queries the nearest stop within 500 m. If no fix is obtained it falls back to the static stop list in `credentials.h`.
 - The JSON endpoint (`?format=JSON`) is described by opentransportdata.swiss
   as *"for testing only"* and can be up to ~11 MB.  The sketch uses
   ArduinoJson's **filter** feature to parse only the relevant fields and keep
