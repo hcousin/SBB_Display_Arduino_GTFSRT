@@ -281,39 +281,49 @@ String extractTag(const String &xml, const String &open,
 void fetchStationDataFromGPS() {
   Serial.println("[OJP] LocationInfo lat=" + xCoord + " lng=" + yCoord);
 
+  time_t now; time(&now);
+  struct tm *utc = gmtime(&now);
+  char tsNow[25];
+  strftime(tsNow, sizeof(tsNow), "%Y-%m-%dT%H:%M:%SZ", utc);
+
   String body =
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-    "<OJP xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
-    " xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\""
-    " xmlns=\"http://www.siri.org.uk/siri\" version=\"1.0\""
-    " xmlns:ojp=\"http://www.vdv.de/ojp\""
-    " xsi:schemaLocation=\"http://www.siri.org.uk/siri ../ojp-xsd-v1.0/OJP.xsd\">"
-    "<OJPRequest><ServiceRequest>"
-    "<RequestTimestamp>2020-01-01T00:00:00Z</RequestTimestamp>"
-    "<RequestorRef>SBB-EPaper-Display_prod</RequestorRef>"
-    "<ojp:OJPLocationInformationRequest>"
-    "<RequestTimestamp>2020-01-01T00:00:00Z</RequestTimestamp>"
-    "<MessageIdentifier>1</MessageIdentifier>"
-    "<ojp:InitialInput><ojp:GeoRestriction><ojp:Circle>"
-    "<ojp:Center>"
-    "<Longitude>" + yCoord + "</Longitude>"
-    "<Latitude>"  + xCoord + "</Latitude>"
-    "</ojp:Center>"
-    "<ojp:Radius>" + String(OJP_RADIUS_M) + "</ojp:Radius>"
-    "</ojp:Circle></ojp:GeoRestriction></ojp:InitialInput>"
-    "<ojp:Restrictions>"
-    "<ojp:Type>stop</ojp:Type>"
-    "<ojp:NumberOfResults>" + String(maxStations) + "</ojp:NumberOfResults>"
-    "<ojp:IncludePtModes>false</ojp:IncludePtModes>"
-    "</ojp:Restrictions>"
-    "</ojp:OJPLocationInformationRequest>"
-    "</ServiceRequest></OJPRequest></OJP>";
+    "<OJP xmlns=\"http://www.vdv.de/ojp\""
+    " xmlns:siri=\"http://www.siri.org.uk/siri\""
+    " version=\"2.0\""
+    " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
+    "<OJPRequest>"
+    "<siri:ServiceRequest>"
+    "<siri:RequestTimestamp>" + String(tsNow) + "</siri:RequestTimestamp>"
+    "<siri:RequestorRef>SBB-EPaper-Display_prod</siri:RequestorRef>"
+    "<OJPLocationInformationRequest>"
+    "<siri:RequestTimestamp>" + String(tsNow) + "</siri:RequestTimestamp>"
+    "<siri:MessageIdentifier>LIR-1</siri:MessageIdentifier>"
+    "<InitialInput>"
+    "<GeoRestriction>"
+    "<Circle>"
+    "<Center>"
+    "<siri:Longitude>" + yCoord + "</siri:Longitude>"
+    "<siri:Latitude>"  + xCoord + "</siri:Latitude>"
+    "</Center>"
+    "<Radius>" + String(OJP_RADIUS_M) + "</Radius>"
+    "</Circle>"
+    "</GeoRestriction>"
+    "</InitialInput>"
+    "<Restrictions>"
+    "<Type>stop</Type>"
+    "<NumberOfResults>" + String(maxStations) + "</NumberOfResults>"
+    "</Restrictions>"
+    "</OJPLocationInformationRequest>"
+    "</siri:ServiceRequest>"
+    "</OJPRequest>"
+    "</OJP>";
 
   String response = ojpPost(body);
   if (response.length() == 0) return;
 
-  const String LOC_OPEN  = "<ojp:Location>";
-  const String LOC_CLOSE = "</ojp:Location>";
+  const String LOC_OPEN  = "<Location>";
+  const String LOC_CLOSE = "</Location>";
   int found = 0, pos = 0;
   String firstStopName = "";
 
@@ -326,11 +336,9 @@ void fetchStationDataFromGPS() {
     pos = be + LOC_CLOSE.length();
 
     String stopRef  = extractTag(block, "<siri:StopPointRef>", "</siri:StopPointRef>");
-    String stopName = extractTag(block, "<ojp:LocationName><ojp:Text>", "</ojp:Text>");
-    if (stopName.length() == 0)
-      stopName = extractTag(block, "<ojp:Text>", "</ojp:Text>");
-    String latStr = extractTag(block, "<siri:Latitude>",  "</siri:Latitude>");
-    String lngStr = extractTag(block, "<siri:Longitude>", "</siri:Longitude>");
+    String stopName = extractTag(block, "<Text>", "</Text>");
+    String latStr   = extractTag(block, "<siri:Latitude>",  "</siri:Latitude>");
+    String lngStr   = extractTag(block, "<siri:Longitude>", "</siri:Longitude>");
 
     if (stopRef.length() == 0 || stopName.length() == 0) continue;
     if (found == 0) firstStopName = stopName;
@@ -382,31 +390,33 @@ void fetchStationBoardData() {
 
   String body =
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-    "<OJP xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
-    " xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\""
-    " xmlns=\"http://www.siri.org.uk/siri\" version=\"1.0\""
-    " xmlns:ojp=\"http://www.vdv.de/ojp\""
-    " xsi:schemaLocation=\"http://www.siri.org.uk/siri ../ojp-xsd-v1.0/OJP.xsd\">"
-    "<OJPRequest><ServiceRequest>"
-    "<RequestTimestamp>" + String(tsNow) + "</RequestTimestamp>"
-    "<RequestorRef>SBB-EPaper-Display_prod</RequestorRef>"
-    "<ojp:OJPStopEventRequest>"
-    "<RequestTimestamp>" + String(tsNow) + "</RequestTimestamp>"
-    "<MessageIdentifier>2</MessageIdentifier>"
-    "<ojp:Location>"
-    "<ojp:PlaceRef>"
-    "<ojp:StopPlaceRef>" + stationID + "</ojp:StopPlaceRef>"
-    "<ojp:LocationName><ojp:Text>stop</ojp:Text></ojp:LocationName>"
-    "</ojp:PlaceRef>"
-    "<ojp:DepArrTime>" + String(tsNow) + "</ojp:DepArrTime>"
-    "</ojp:Location>"
-    "<ojp:Params>"
-    "<ojp:NumberOfResults>" + String(numEntries) + "</ojp:NumberOfResults>"
-    "<ojp:StopEventType>departure</ojp:StopEventType>"
-    "<ojp:IncludeRealtimeData>true</ojp:IncludeRealtimeData>"
-    "</ojp:Params>"
-    "</ojp:OJPStopEventRequest>"
-    "</ServiceRequest></OJPRequest></OJP>";
+    "<OJP xmlns=\"http://www.vdv.de/ojp\""
+    " xmlns:siri=\"http://www.siri.org.uk/siri\""
+    " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+    " version=\"2.0\">"
+    "<OJPRequest>"
+    "<siri:ServiceRequest>"
+    "<siri:RequestTimestamp>" + String(tsNow) + "</siri:RequestTimestamp>"
+    "<siri:RequestorRef>SBB-EPaper-Display_prod</siri:RequestorRef>"
+    "<OJPStopEventRequest>"
+    "<siri:RequestTimestamp>" + String(tsNow) + "</siri:RequestTimestamp>"
+    "<siri:MessageIdentifier>SER-1</siri:MessageIdentifier>"
+    "<Location>"
+    "<PlaceRef>"
+    "<siri:StopPointRef>" + stationID + "</siri:StopPointRef>"
+    "<Name><Text>stop</Text></Name>"
+    "</PlaceRef>"
+    "<DepArrTime>" + String(tsNow) + "</DepArrTime>"
+    "</Location>"
+    "<Params>"
+    "<NumberOfResults>" + String(numEntries) + "</NumberOfResults>"
+    "<StopEventType>departure</StopEventType>"
+    "<UseRealtimeData>full</UseRealtimeData>"
+    "</Params>"
+    "</OJPStopEventRequest>"
+    "</siri:ServiceRequest>"
+    "</OJPRequest>"
+    "</OJP>";
 
   String response = ojpPost(body);
   if (response.length() == 0) return;
@@ -429,8 +439,8 @@ void fetchStationBoardData() {
     return String(out);
   };
 
-  const String SE_OPEN  = "<ojp:StopEvent>";
-  const String SE_CLOSE = "</ojp:StopEvent>";
+  const String SE_OPEN  = "<StopEvent>";
+  const String SE_CLOSE = "</StopEvent>";
   int found = 0, pos = 0;
 
   while (found < numEntries) {
@@ -441,8 +451,8 @@ void fetchStationBoardData() {
     String block = response.substring(bs, be + SE_CLOSE.length());
     pos = be + SE_CLOSE.length();
 
-    String timetabled = extractTag(block, "<ojp:TimetabledTime>", "</ojp:TimetabledTime>");
-    String estimated  = extractTag(block, "<ojp:EstimatedTime>",  "</ojp:EstimatedTime>");
+    String timetabled = extractTag(block, "<TimetabledTime>", "</TimetabledTime>");
+    String estimated  = extractTag(block, "<EstimatedTime>",  "</EstimatedTime>");
 
     String depTime = isoToHHMM(estimated.length() > 0 ? estimated : timetabled);
 
@@ -456,13 +466,8 @@ void fetchStationBoardData() {
       if (delayMin < 0) delayMin += 1440;
     }
 
-    String lineName = extractTag(block, "<ojp:PublishedLineName><ojp:Text>", "</ojp:Text>");
-    if (lineName.length() == 0)
-      lineName = extractTag(block, "<ojp:PublishedLineName>\n      <ojp:Text>", "</ojp:Text>");
-
-    String dest = extractTag(block, "<ojp:DestinationText><ojp:Text>", "</ojp:Text>");
-    if (dest.length() == 0)
-      dest = extractTag(block, "<ojp:DestinationText>\n      <ojp:Text>", "</ojp:Text>");
+    String lineName = extractTag(block, "<PublishedLineName><Text>", "</Text>");
+    String dest     = extractTag(block, "<DestinationText><Text>",   "</Text>");
 
     stationBoardData[found].line_operator = "";
     stationBoardData[found].type          = "";
