@@ -325,13 +325,10 @@ void fetchStationDataFromGPS() {
     "</OJP>";
 
   String response = ojpPost(body);
-  Serial.println("[OJP] Full LocationInfo response:");
-  Serial.println(response);
-  Serial.println("[OJP] End of response");
   if (response.length() == 0) return;
 
-  const String LOC_OPEN  = "<Location>";
-  const String LOC_CLOSE = "</Location>";
+  const String LOC_OPEN  = "<PlaceResult>";
+  const String LOC_CLOSE = "</PlaceResult>";
   int found = 0, pos = 0;
   String firstStopName = "";
 
@@ -343,8 +340,14 @@ void fetchStationDataFromGPS() {
     String block = response.substring(bs, be + LOC_CLOSE.length());
     pos = be + LOC_CLOSE.length();
 
-    String stopRef  = extractTag(block, "<siri:StopPointRef>", "</siri:StopPointRef>");
-    String stopName = extractTag(block, "<Text>", "</Text>");
+    // OJP 2.0 response structure:
+    // <StopPlaceRef>8590633</StopPlaceRef>
+    // <StopPlaceName><Text xml:lang="de">Glattpark, Chavez-Allee</Text></StopPlaceName>
+    // <GeoPosition><siri:Longitude>8.56</siri:Longitude><siri:Latitude>47.42</siri:Latitude></GeoPosition>
+    String stopRef  = extractTag(block, "<StopPlaceRef>",  "</StopPlaceRef>");
+    String stopName = extractTag(block, "<StopPlaceName><Text xml:lang=\"de\">", "</Text>");
+    if (stopName.length() == 0)
+      stopName = extractTag(block, "<StopPlaceName><Text>", "</Text>");
     String latStr   = extractTag(block, "<siri:Latitude>",  "</siri:Latitude>");
     String lngStr   = extractTag(block, "<siri:Longitude>", "</siri:Longitude>");
 
