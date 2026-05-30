@@ -241,20 +241,25 @@ void fetchGPSFix() {
 String ojpPost(const String &body) {
   WiFiClientSecure client;
   client.setInsecure();
+  client.setTimeout(10000);  // 10s TCP timeout
   HTTPClient http;
   http.begin(client, OJP_URL);
+  http.setTimeout(10000);    // 10s HTTP timeout
   http.addHeader("Content-Type",  "application/xml");
   http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
   http.addHeader("User-Agent",    "SBB-EPaper-Display/2.0 ESP32");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  Serial.println("[OJP] POST to " + String(OJP_URL));
   int code = http.POST(body);
+  Serial.println("[OJP] Response code: " + String(code));
   if (code != HTTP_CODE_OK) {
-    Serial.printf("[OJP] HTTP error %d\n", code);
-    if (code > 0) Serial.println(http.getString().substring(0, 200));
+    Serial.println("[OJP] Error body: " + http.getString().substring(0, 300));
     http.end();
     return "";
   }
   String response = http.getString();
+  Serial.println("[OJP] Response length: " + String(response.length()));
+  Serial.println("[OJP] First 200 chars: " + response.substring(0, 200));
   http.end();
   return response;
 }
@@ -320,6 +325,7 @@ void fetchStationDataFromGPS() {
     "</OJP>";
 
   String response = ojpPost(body);
+  Serial.println("[OJP] LocationInfo response received, length=" + String(response.length()));
   if (response.length() == 0) return;
 
   const String LOC_OPEN  = "<Location>";
