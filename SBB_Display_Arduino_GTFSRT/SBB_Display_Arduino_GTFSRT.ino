@@ -85,9 +85,10 @@ GpsData gpsData;
 String xCoord = DEFAULT_LAT;
 String yCoord = DEFAULT_LNG;
 
-int stationIndex = 1;
+int stationIndex = 0;
 const int maxStations = 10;
 StationData stationDataArray[maxStations];
+int stationsFound = 0;   // actual number of stops returned by OJP
 String stationID = "";
 const int numEntries = 4;
 StationBoardData stationBoardData[numEntries];
@@ -161,10 +162,12 @@ void setup() {
 
   fetchGPSFix();
   fetchStationDataFromGPS();
+  epd_poweron();
   title();
   displayStationData();
   fetchStationBoardData();
   displayStationBoardData();
+  epd_poweroff();
 }
 
 // ===========================================================================
@@ -178,25 +181,31 @@ void loop() {
   Serial.println(buf);
 
   readBatVoltage();
+  epd_poweron();
   displayTime();
+  epd_poweroff();
 
   Serial.println(buttonPressed);
   Serial.print("Station Index before if = ");
   Serial.println(stationIndex);
 
   if (buttonPressed) {
-    if (stationIndex >= maxStations) {
-      stationIndex = 1;
+    if (stationIndex >= stationsFound - 1) {
+      stationIndex = 0;
     } else {
       stationIndex++;
     }
     buttonPressed = false;
+    epd_poweron();
     displayStationData();
     fetchStationBoardData();
     displayStationBoardData();
+    epd_poweroff();
   } else {
     fetchStationBoardData();
+    epd_poweron();
     displayStationBoardData();
+    epd_poweroff();
   }
 
   unsigned long startTime = millis();
@@ -377,8 +386,10 @@ void fetchStationDataFromGPS() {
   }
 
   if (found > 0) {
+    stationsFound = found;
     stationID = stationDataArray[stationIndex].station_id;
-    Serial.println("[OJP] Active: " + stationDataArray[stationIndex].near_station);
+    Serial.println("[OJP] Active: " + stationDataArray[stationIndex].near_station +
+                   " (" + String(stationDataArray[stationIndex].distance) + "m)");
   }
 }
 
