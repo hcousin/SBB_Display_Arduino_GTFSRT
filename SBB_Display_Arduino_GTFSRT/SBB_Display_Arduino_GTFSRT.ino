@@ -325,7 +325,9 @@ void fetchStationDataFromGPS() {
     "</OJP>";
 
   String response = ojpPost(body);
-  Serial.println("[OJP] LocationInfo response received, length=" + String(response.length()));
+  Serial.println("[OJP] Full LocationInfo response:");
+  Serial.println(response);
+  Serial.println("[OJP] End of response");
   if (response.length() == 0) return;
 
   const String LOC_OPEN  = "<Location>";
