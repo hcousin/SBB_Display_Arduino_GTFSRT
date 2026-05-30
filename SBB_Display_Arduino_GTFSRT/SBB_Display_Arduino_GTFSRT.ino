@@ -512,8 +512,8 @@ void fetchStationBoardData() {
 
   String response = ojpPost(body);
   if (response.length() == 0) return;
-
-  // ISO8601 UTC → local HH:MM
+  Serial.println("[OJP] StopEvent length=" + String(response.length()));
+  Serial.println("[OJP] StopEvent preview: " + response.substring(0, 600));
   auto isoToHHMM = [](const String &iso) -> String {
     if (iso.length() < 16) return "--:--";
     struct tm t = {};
