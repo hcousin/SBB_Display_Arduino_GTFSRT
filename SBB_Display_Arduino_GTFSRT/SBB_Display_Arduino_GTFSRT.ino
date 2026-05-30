@@ -244,7 +244,7 @@ String ojpPost(const String &body) {
   HTTPClient http;
   http.begin(client, OJP_URL);
   http.addHeader("Content-Type",  "application/xml");
-  http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
+  http.addHeader("Authorization", OJP_API_KEY);
   http.addHeader("User-Agent",    "SBB-EPaper-Display/2.0 ESP32");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   int code = http.POST(body);
