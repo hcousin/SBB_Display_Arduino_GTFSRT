@@ -71,6 +71,10 @@
 #define OJP_URL      "https://api.opentransportdata.swiss/ojp2020"
 #define OJP_RADIUS_M 500
 
+// Set to false if no GPS module is connected – skips the 30s wait
+// and uses DEFAULT_LAT / DEFAULT_LNG from credentials.h immediately
+#define GPS_ENABLED  false
+
 // ---------------------------------------------------------------------------
 // Globals – identical to original
 // ---------------------------------------------------------------------------
@@ -78,8 +82,8 @@ uint8_t *framebuffer;
 int vref = 1100;
 
 GpsData gpsData;
-String xCoord = "47.421250255895124";
-String yCoord = "8.562216925810933";
+String xCoord = DEFAULT_LAT;
+String yCoord = DEFAULT_LNG;
 
 int stationIndex = 1;
 const int maxStations = 10;
@@ -208,6 +212,11 @@ void loop() {
 // TinyGPSPlus instantiated locally to avoid global constructor issues.
 // ===========================================================================
 void fetchGPSFix() {
+  if (!GPS_ENABLED) {
+    Serial.println("[GPS] GPS_ENABLED=false – using fallback coordinates.");
+    Serial.println("[GPS] lat=" + xCoord + " lng=" + yCoord);
+    return;
+  }
   Serial.println("[GPS] Waiting for fix...");
   Serial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
   TinyGPSPlus gpsLocal;
@@ -222,7 +231,7 @@ void fetchGPSFix() {
     }
     delay(100);
   }
-  Serial.println("[GPS] No fix – using default coordinates.");
+  Serial.println("[GPS] No fix – using fallback coordinates.");
 }
 
 // ===========================================================================
