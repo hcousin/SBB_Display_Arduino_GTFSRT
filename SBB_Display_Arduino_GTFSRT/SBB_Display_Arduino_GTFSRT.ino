@@ -161,6 +161,7 @@ void setup() {
   Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
 
   fetchGPSFix();
+  fetchGPSAddress();
   fetchStationDataFromGPS();
   epd_poweron();
   title();
@@ -216,7 +217,76 @@ void loop() {
 }
 
 // ===========================================================================
-// fetchGPSFix()
+// fetchGPSAddress()
+// Reverse-geocodes xCoord/yCoord to a street address using Nominatim
+// (OpenStreetMap). No API key required.
+// Fills gpsData.x_coord with a formatted address string, e.g.:
+//   "Dufaux-Str. 65, Glattpark (Opfikon)"
+// Falls back to showing coordinates if the request fails.
+// ===========================================================================
+void fetchGPSAddress() {
+  String url = "https://nominatim.openstreetmap.org/reverse?format=json&lat=" +
+               xCoord + "&lon=" + yCoord + "&zoom=18&addressdetails=1";
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, url);
+  http.addHeader("User-Agent", "SBB-EPaper-Display/2.0 ESP32");
+  http.setTimeout(10000);
+
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.println("[Nominatim] HTTP error: " + String(code));
+    gpsData.x_coord = xCoord + " / " + yCoord;
+    http.end();
+    return;
+  }
+
+  String response = http.getString();
+  http.end();
+
+  // Parse the display_name field from JSON – simple string search
+  // "display_name":"Dufaux-Strasse, 65, Glattpark, Opfikon, ..."
+  auto extractJson = [](const String &json, const String &key) -> String {
+    String search = "\"" + key + "\":\"";
+    int s = json.indexOf(search);
+    if (s < 0) return "";
+    s += search.length();
+    int e = json.indexOf("\"", s);
+    if (e < 0) return "";
+    return json.substring(s, e);
+  };
+
+  // Build a short address from individual fields rather than the full
+  // display_name (which includes country, canton etc.)
+  String road    = extractJson(response, "road");
+  String houseNo = extractJson(response, "house_number");
+  String suburb  = extractJson(response, "suburb");
+  String city    = extractJson(response, "city");
+  if (city.length() == 0) city = extractJson(response, "town");
+  if (city.length() == 0) city = extractJson(response, "village");
+
+  String address = "";
+  if (road.length() > 0) {
+    address = road;
+    if (houseNo.length() > 0) address += " " + houseNo;
+  }
+  if (suburb.length() > 0 && suburb != city) {
+    address += (address.length() > 0 ? ", " : "") + suburb;
+  }
+  if (city.length() > 0 && city != suburb) {
+    address += (address.length() > 0 ? " (" : "") + city;
+    if (suburb.length() > 0 && suburb != city) address += ")";
+  }
+
+  if (address.length() == 0) address = xCoord + " / " + yCoord;
+
+  Serial.println("[Nominatim] Address: " + address);
+  gpsData.x_coord = address;
+}
+
+// ===========================================================================
 // NEW: reads NMEA from GPS module, updates xCoord/yCoord if fix obtained.
 // TinyGPSPlus instantiated locally to avoid global constructor issues.
 // ===========================================================================
@@ -537,11 +607,13 @@ void displayStationData() {
   epd_clear_area({ 250, 10,  700, 50 });
   epd_clear_area({ 250, 160, 700, 50 });
 
+  // Row 1: reverse-geocoded street address
   cursor_x = 250; cursor_y = 50;
-  char pos[stationDataArray[stationIndex].gps_address.length() + 1];
-  stationDataArray[stationIndex].gps_address.toCharArray(pos, sizeof(pos));
+  char pos[gpsData.x_coord.length() + 1];
+  gpsData.x_coord.toCharArray(pos, sizeof(pos));
   writeln((GFXfont *)&FiraSans, pos, &cursor_x, &cursor_y, NULL);
 
+  // Row 2: nearest stop name + distance
   cursor_x = 250; cursor_y = 200;
   String nStation = stationDataArray[stationIndex].near_station + " " +
                     String(stationDataArray[stationIndex].distance) + " m";
