@@ -67,8 +67,8 @@
 #define GPS_BAUD           (9600)
 #define GPS_FIX_TIMEOUT_MS (30000)
 
-// OJP API
-#define OJP_URL      "https://api.opentransportdata.swiss/ojp2020"
+// OJP API - note: OJP 2.0 endpoint is /ojp20 (not /ojp2020)
+#define OJP_URL      "https://api.opentransportdata.swiss/ojp20"
 #define OJP_RADIUS_M 500
 
 // Set to false if no GPS module is connected – skips the 30s wait
@@ -244,7 +244,7 @@ String ojpPost(const String &body) {
   HTTPClient http;
   http.begin(client, OJP_URL);
   http.addHeader("Content-Type",  "application/xml");
-  http.addHeader("Authorization", OJP_API_KEY);
+  http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
   http.addHeader("User-Agent",    "SBB-EPaper-Display/2.0 ESP32");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   int code = http.POST(body);
