@@ -567,8 +567,22 @@ void fetchStationBoardData() {
       if (delayMin < 0) delayMin += 1440;
     }
 
-    String lineName = extractTag(block, "<PublishedLineName><Text>", "</Text>");
-    String dest     = extractTag(block, "<DestinationText><Text>",   "</Text>");
+    // Try multiple tag patterns for PublishedLineName
+    String lineName = extractTag(block, "<PublishedLineName><Text xml:lang=\"de\">", "</Text>");
+    if (lineName.length() == 0)
+      lineName = extractTag(block, "<PublishedLineName><Text>", "</Text>");
+    if (lineName.length() == 0)
+      lineName = extractTag(block, "<PublishedLineName>", "</PublishedLineName>");
+
+    // Try multiple tag patterns for DestinationText
+    String dest = extractTag(block, "<DestinationText><Text xml:lang=\"de\">", "</Text>");
+    if (dest.length() == 0)
+      dest = extractTag(block, "<DestinationText><Text>", "</Text>");
+    if (dest.length() == 0)
+      dest = extractTag(block, "<DestinationText>", "</DestinationText>");
+
+    Serial.println("[OJP] lineName='" + lineName + "' dest='" + dest + "'");
+    Serial.println("[OJP] block preview: " + block.substring(0, 300));
 
     stationBoardData[found].line_operator = "";
     stationBoardData[found].type          = "";
