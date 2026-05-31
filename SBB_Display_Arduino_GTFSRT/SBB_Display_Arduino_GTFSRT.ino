@@ -314,16 +314,15 @@ void fetchGPSFix() {
 }
 
 // ===========================================================================
-// ojpPost() – shared HTTPS POST helper for OJP API calls
-// WiFiClientSecure instantiated locally to avoid global constructor issues.
+// ojpPost() – used only for small responses (LocationInfo ~2KB)
 // ===========================================================================
 String ojpPost(const String &body) {
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(10000);  // 10s TCP timeout
+  client.setTimeout(10000);
   HTTPClient http;
   http.begin(client, OJP_URL);
-  http.setTimeout(10000);    // 10s HTTP timeout
+  http.setTimeout(10000);
   http.addHeader("Content-Type",  "application/xml");
   http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
   http.addHeader("User-Agent",    "SBB-EPaper-Display/2.0 ESP32");
@@ -332,15 +331,156 @@ String ojpPost(const String &body) {
   int code = http.POST(body);
   Serial.println("[OJP] Response code: " + String(code));
   if (code != HTTP_CODE_OK) {
-    Serial.println("[OJP] Error body: " + http.getString().substring(0, 300));
+    Serial.println("[OJP] Error: " + http.getString().substring(0, 200));
     http.end();
     return "";
   }
   String response = http.getString();
   Serial.println("[OJP] Response length: " + String(response.length()));
-  Serial.println("[OJP] First 200 chars: " + response.substring(0, 200));
   http.end();
   return response;
+}
+
+// ===========================================================================
+// ojpPostStream()
+// Streams the StopEvent response and extracts departure fields on-the-fly
+// without loading the full ~10KB response into RAM.
+// Reads in 1KB chunks with 512-byte overlap to catch tags across boundaries.
+// Fills stationBoardData[] directly.
+// ===========================================================================
+bool ojpPostStream(const String &body) {
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(15000);
+  HTTPClient http;
+  http.begin(client, OJP_URL);
+  http.setTimeout(15000);
+  http.addHeader("Content-Type",  "application/xml");
+  http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
+  http.addHeader("User-Agent",    "SBB-EPaper-Display/2.0 ESP32");
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  Serial.println("[OJP] POST (stream) to " + String(OJP_URL));
+
+  int code = http.POST(body);
+  Serial.println("[OJP] Response code: " + String(code));
+  if (code != HTTP_CODE_OK) {
+    Serial.println("[OJP] Error: " + http.getString().substring(0, 200));
+    http.end();
+    return false;
+  }
+
+  // ISO8601 UTC → local HH:MM
+  auto isoToHHMM = [](const String &iso) -> String {
+    if (iso.length() < 16) return "--:--";
+    struct tm t = {};
+    t.tm_year  = iso.substring(0,4).toInt() - 1900;
+    t.tm_mon   = iso.substring(5,7).toInt() - 1;
+    t.tm_mday  = iso.substring(8,10).toInt();
+    t.tm_hour  = iso.substring(11,13).toInt();
+    t.tm_min   = iso.substring(14,16).toInt();
+    t.tm_sec   = 0;
+    t.tm_isdst = -1;
+    time_t utcT = mktime(&t);
+    struct tm *local = localtime(&utcT);
+    char out[6];
+    strftime(out, sizeof(out), "%H:%M", local);
+    return String(out);
+  };
+
+  // Helper: extract value between open and close tags
+  auto xtag = [](const String &s, const String &open, const String &close) -> String {
+    int a = s.indexOf(open);
+    if (a < 0) return "";
+    a += open.length();
+    int b = s.indexOf(close, a);
+    if (b < 0) return "";
+    return s.substring(a, b);
+  };
+
+  WiFiClient *stream = http.getStreamPtr();
+  const int CHUNK = 1024;
+  const int OVER  = 512;
+  String    buf   = "";
+  int       found = 0;
+
+  // Clear stationBoardData
+  for (int i = 0; i < numEntries; i++) {
+    stationBoardData[i].line           = "-";
+    stationBoardData[i].destination    = "";
+    stationBoardData[i].departure_time = "--:--";
+    stationBoardData[i].delay          = 0;
+    stationBoardData[i].type           = "";
+    stationBoardData[i].line_operator  = "";
+  }
+
+  unsigned long t0 = millis();
+  while ((stream->connected() || stream->available()) && found < numEntries) {
+    if (millis() - t0 > 14000) { Serial.println("[OJP] Stream timeout"); break; }
+
+    if (stream->available()) {
+      uint8_t tmp[CHUNK + 1];
+      int n = stream->readBytes(tmp, CHUNK);
+      if (n > 0) { tmp[n] = 0; buf += String((char *)tmp); }
+    } else { delay(1); continue; }
+
+    // Extract all complete <StopEvent>…</StopEvent> blocks
+    while (found < numEntries) {
+      int se_s = buf.indexOf("<StopEvent>");
+      if (se_s < 0) break;
+      int se_e = buf.indexOf("</StopEvent>", se_s);
+      if (se_e < 0) break;  // incomplete – read more data
+
+      String block = buf.substring(se_s, se_e + 12);
+      buf = buf.substring(se_e + 12);  // advance past processed block
+
+      String timetabled = xtag(block, "<TimetabledTime>", "</TimetabledTime>");
+      String estimated  = xtag(block, "<EstimatedTime>",  "</EstimatedTime>");
+      String depTime    = isoToHHMM(estimated.length() > 0 ? estimated : timetabled);
+
+      int delayMin = 0;
+      if (estimated.length() > 0 && timetabled.length() > 0) {
+        int tH = timetabled.substring(11,13).toInt();
+        int tM = timetabled.substring(14,16).toInt();
+        int eH = estimated.substring(11,13).toInt();
+        int eM = estimated.substring(14,16).toInt();
+        delayMin = (eH*60 + eM) - (tH*60 + tM);
+        if (delayMin < 0) delayMin += 1440;
+      }
+
+      // Try with xml:lang attribute first, then plain
+      String lineName = xtag(block, "<PublishedLineName><Text xml:lang=\"de\">", "</Text>");
+      if (lineName.length() == 0)
+        lineName = xtag(block, "<PublishedLineName><Text>", "</Text>");
+
+      String dest = xtag(block, "<DestinationText><Text xml:lang=\"de\">", "</Text>");
+      if (dest.length() == 0)
+        dest = xtag(block, "<DestinationText><Text>", "</Text>");
+
+      // Debug: print first block in full so we can verify tag names
+      if (found == 0) Serial.println("[OJP] Block0: " + block.substring(0, 400));
+
+      stationBoardData[found].line           = lineName.length() > 0 ? lineName : "-";
+      stationBoardData[found].destination    = dest;
+      stationBoardData[found].departure_time = depTime;
+      stationBoardData[found].delay          = delayMin;
+
+      Serial.printf("[OJP] %d: '%s' → '%s'  %s  +%d\n",
+                    found,
+                    stationBoardData[found].line.c_str(),
+                    stationBoardData[found].destination.c_str(),
+                    stationBoardData[found].departure_time.c_str(),
+                    delayMin);
+      found++;
+    }
+
+    // Trim buffer but keep overlap for cross-chunk tags
+    if (buf.length() > (unsigned)(CHUNK + OVER))
+      buf = buf.substring(buf.length() - OVER);
+  }
+
+  http.end();
+  Serial.printf("[OJP] Stream done, %d departures, heap=%d\n", found, ESP.getFreeHeap());
+  return found > 0;
 }
 
 // ===========================================================================
@@ -511,100 +651,9 @@ void fetchStationBoardData() {
     "</OJPRequest>"
     "</OJP>";
 
-  String response = ojpPost(body);
-  if (response.length() == 0) return;
-  Serial.println("[OJP] StopEvent length=" + String(response.length()));
-  Serial.println("[OJP] StopEvent chars 600-1200: " + response.substring(600, 1200));
-  auto isoToHHMM = [](const String &iso) -> String {
-    if (iso.length() < 16) return "--:--";
-    struct tm t = {};
-    t.tm_year  = iso.substring(0,4).toInt() - 1900;
-    t.tm_mon   = iso.substring(5,7).toInt() - 1;
-    t.tm_mday  = iso.substring(8,10).toInt();
-    t.tm_hour  = iso.substring(11,13).toInt();
-    t.tm_min   = iso.substring(14,16).toInt();
-    t.tm_sec   = 0;
-    t.tm_isdst = -1;
-    time_t utcT = mktime(&t);
-    struct tm *local = localtime(&utcT);
-    char out[6];
-    strftime(out, sizeof(out), "%H:%M", local);
-    return String(out);
-  };
-
-  const String SE_OPEN  = "<StopEvent>";
-  const String SE_CLOSE = "</StopEvent>";
-  int found = 0, pos = 0;
-
-  // Debug: print first StopEvent block
-  int dbgStart = response.indexOf(SE_OPEN);
-  int dbgEnd   = response.indexOf(SE_CLOSE, dbgStart);
-  if (dbgStart >= 0 && dbgEnd >= 0) {
-    Serial.println("[OJP] First StopEvent block:");
-    Serial.println(response.substring(dbgStart, dbgEnd + SE_CLOSE.length()));
-  }
-
-  while (found < numEntries) {
-    int bs = response.indexOf(SE_OPEN, pos);
-    if (bs < 0) break;
-    int be = response.indexOf(SE_CLOSE, bs);
-    if (be < 0) break;
-    String block = response.substring(bs, be + SE_CLOSE.length());
-    pos = be + SE_CLOSE.length();
-
-    String timetabled = extractTag(block, "<TimetabledTime>", "</TimetabledTime>");
-    String estimated  = extractTag(block, "<EstimatedTime>",  "</EstimatedTime>");
-
-    String depTime = isoToHHMM(estimated.length() > 0 ? estimated : timetabled);
-
-    int delayMin = 0;
-    if (estimated.length() > 0 && timetabled.length() > 0) {
-      int tH = timetabled.substring(11,13).toInt();
-      int tM = timetabled.substring(14,16).toInt();
-      int eH = estimated.substring(11,13).toInt();
-      int eM = estimated.substring(14,16).toInt();
-      delayMin = (eH*60 + eM) - (tH*60 + tM);
-      if (delayMin < 0) delayMin += 1440;
-    }
-
-    // Try multiple tag patterns for PublishedLineName
-    String lineName = extractTag(block, "<PublishedLineName><Text xml:lang=\"de\">", "</Text>");
-    if (lineName.length() == 0)
-      lineName = extractTag(block, "<PublishedLineName><Text>", "</Text>");
-    if (lineName.length() == 0)
-      lineName = extractTag(block, "<PublishedLineName>", "</PublishedLineName>");
-
-    // Try multiple tag patterns for DestinationText
-    String dest = extractTag(block, "<DestinationText><Text xml:lang=\"de\">", "</Text>");
-    if (dest.length() == 0)
-      dest = extractTag(block, "<DestinationText><Text>", "</Text>");
-    if (dest.length() == 0)
-      dest = extractTag(block, "<DestinationText>", "</DestinationText>");
-
-    Serial.println("[OJP] lineName='" + lineName + "' dest='" + dest + "'");
-    Serial.println("[OJP] block preview: " + block.substring(0, 300));
-
-    stationBoardData[found].line_operator = "";
-    stationBoardData[found].type          = "";
-    stationBoardData[found].line          = lineName.length() > 0 ? lineName : "-";
-    stationBoardData[found].destination   = dest;
-    stationBoardData[found].departure_time = depTime;
-    stationBoardData[found].delay         = delayMin;
-
-    Serial.printf("[OJP] %d: %s → %s  %s  +%d\n",
-                  found, stationBoardData[found].line.c_str(),
-                  stationBoardData[found].destination.c_str(),
-                  stationBoardData[found].departure_time.c_str(), delayMin);
-    found++;
-  }
-
-  for (int i = found; i < numEntries; i++) {
-    stationBoardData[i].line           = "-";
-    stationBoardData[i].destination    = "";
-    stationBoardData[i].departure_time = "--:--";
-    stationBoardData[i].delay          = 0;
-  }
+  ojpPostStream(body);
 }
+
 
 // ===========================================================================
 // Display functions – IDENTICAL to original
