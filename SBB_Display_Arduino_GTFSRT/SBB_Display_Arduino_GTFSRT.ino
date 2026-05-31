@@ -514,7 +514,7 @@ void fetchStationBoardData() {
   String response = ojpPost(body);
   if (response.length() == 0) return;
   Serial.println("[OJP] StopEvent length=" + String(response.length()));
-  Serial.println("[OJP] StopEvent preview: " + response.substring(0, 600));
+  Serial.println("[OJP] StopEvent chars 600-1200: " + response.substring(600, 1200));
   auto isoToHHMM = [](const String &iso) -> String {
     if (iso.length() < 16) return "--:--";
     struct tm t = {};
@@ -535,6 +535,14 @@ void fetchStationBoardData() {
   const String SE_OPEN  = "<StopEvent>";
   const String SE_CLOSE = "</StopEvent>";
   int found = 0, pos = 0;
+
+  // Debug: print first StopEvent block
+  int dbgStart = response.indexOf(SE_OPEN);
+  int dbgEnd   = response.indexOf(SE_CLOSE, dbgStart);
+  if (dbgStart >= 0 && dbgEnd >= 0) {
+    Serial.println("[OJP] First StopEvent block:");
+    Serial.println(response.substring(dbgStart, dbgEnd + SE_CLOSE.length()));
+  }
 
   while (found < numEntries) {
     int bs = response.indexOf(SE_OPEN, pos);
