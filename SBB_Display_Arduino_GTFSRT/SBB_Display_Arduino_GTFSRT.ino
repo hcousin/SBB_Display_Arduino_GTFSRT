@@ -423,15 +423,17 @@ bool ojpPostStream(const String &body) {
       if (n > 0) { tmp[n] = 0; buf += String((char *)tmp); }
     } else { delay(1); continue; }
 
-    // Extract all complete <StopEvent>…</StopEvent> blocks
+    // Extract all complete <StopEventResult>…</StopEventResult> blocks
+    // StopEventResult contains both <StopEvent> (times) and <Service>
+    // (line name, destination) as siblings - must use the outer wrapper
     while (found < numEntries) {
-      int se_s = buf.indexOf("<StopEvent>");
+      int se_s = buf.indexOf("<StopEventResult>");
       if (se_s < 0) break;
-      int se_e = buf.indexOf("</StopEvent>", se_s);
+      int se_e = buf.indexOf("</StopEventResult>", se_s);
       if (se_e < 0) break;  // incomplete – read more data
 
-      String block = buf.substring(se_s, se_e + 12);
-      buf = buf.substring(se_e + 12);  // advance past processed block
+      String block = buf.substring(se_s, se_e + 18); // 18 = len("</StopEventResult>")
+      buf = buf.substring(se_e + 18);  // advance past processed block
 
       String timetabled = xtag(block, "<TimetabledTime>", "</TimetabledTime>");
       String estimated  = xtag(block, "<EstimatedTime>",  "</EstimatedTime>");
@@ -447,17 +449,21 @@ bool ojpPostStream(const String &body) {
         if (delayMin < 0) delayMin += 1440;
       }
 
-      // Try with xml:lang attribute first, then plain
+      // Line name – in <Service><PublishedLineName>
       String lineName = xtag(block, "<PublishedLineName><Text xml:lang=\"de\">", "</Text>");
       if (lineName.length() == 0)
         lineName = xtag(block, "<PublishedLineName><Text>", "</Text>");
 
+      // Destination – in <Service><DestinationText>
       String dest = xtag(block, "<DestinationText><Text xml:lang=\"de\">", "</Text>");
       if (dest.length() == 0)
         dest = xtag(block, "<DestinationText><Text>", "</Text>");
 
-      // Debug: print first block in full so we can verify tag names
-      if (found == 0) Serial.println("[OJP] Block0: " + block.substring(0, 400));
+      // Debug: print first block so we can verify tag names
+      if (found == 0) {
+        Serial.println("[OJP] Block0 (first 400): " + block.substring(0, 400));
+        Serial.println("[OJP] Block0 (400-800): "   + block.substring(400, 800));
+      }
 
       stationBoardData[found].line           = lineName.length() > 0 ? lineName : "-";
       stationBoardData[found].destination    = dest;
@@ -474,8 +480,9 @@ bool ojpPostStream(const String &body) {
     }
 
     // Trim buffer but keep overlap for cross-chunk tags
-    if (buf.length() > (unsigned)(CHUNK + OVER))
-      buf = buf.substring(buf.length() - OVER);
+    // StopEventResult blocks can be ~2KB so keep 2KB overlap
+    if (buf.length() > (unsigned)(CHUNK + 2048))
+      buf = buf.substring(buf.length() - 2048);
   }
 
   http.end();
