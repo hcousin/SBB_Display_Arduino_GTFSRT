@@ -13,12 +13,13 @@ jobs:
 
     steps:
       - name: Mirror to Codeberg
+        env:
+          CB_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
         run: |
           REPO_NAME="${GITHUB_REPOSITORY#*/}"
-          CB_USER="hcousin"
-          CB_TOKEN="${{ secrets.CODEBERG_TOKEN }}"
-          GH_TOKEN="${{ secrets.GH_PAT }}"
-
-          git clone --bare "https://x-token-auth:${GH_TOKEN}@github.com/${{ github.repository }}.git" repo_bare
+          echo "machine codeberg.org login hcousin password ${CB_TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
+          git clone --bare "https://hcousin:${GH_PAT}@github.com/${{ github.repository }}.git" repo_bare
           cd repo_bare
-          git push --mirror "https://${CB_USER}:${CB_TOKEN}@codeberg.org/${CB_USER}/${REPO_NAME}.git"
+          git push --mirror "https://codeberg.org/hcousin/${REPO_NAME}.git"
