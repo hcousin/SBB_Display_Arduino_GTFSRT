@@ -1,0 +1,22 @@
+name: Mirror to Codeberg
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["**"]
+  delete:          # Gelöschte Branches/Tags auch synchronisieren
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Mirror to Codeberg
+        run: |
+          # Repo-Name aus dem GitHub-Kontext auslesen
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+
+          git clone --bare https://${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git repo_bare
+          cd repo_bare
+          git push --mirror https://hcousin:${{ secrets.CODEBERG_TOKEN }}@codeberg.org/hcousin/${REPO_NAME}.git
