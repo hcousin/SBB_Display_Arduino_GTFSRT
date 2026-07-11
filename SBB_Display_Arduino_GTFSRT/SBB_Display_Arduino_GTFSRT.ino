@@ -732,8 +732,13 @@ bool ojpPostStream(const String &body) {
       DBG_PRINTLN("Timetabled = " + timetabled);
       DBG_PRINTLN("Estimated  = " + estimated);
 
+      // Show the planned (timetabled) time, with any delay shown
+      // separately via stationBoardData[].delay (rendered as a
+      // "+N" badge in displayStationBoardData()). Falls back to the
+      // estimated time only if no timetabled time was provided by
+      // OJP, so a time is still shown in that edge case.
       String depTime = isoToHHMM(
-        estimated.length() ? estimated : timetabled);
+        timetabled.length() ? timetabled : estimated);
 
       int delayMin = 0;
 
