@@ -585,20 +585,14 @@ bool ojpPostStream(const String &body) {
     return false;
   }
 
-  // Helper: extract value between open and close tags
-  auto xtag = [](const String &s, const String &open, const String &close) -> String {
-    int a = s.indexOf(open);
-    if (a < 0) return "";
-    a += open.length();
-    int b = s.indexOf(close, a);
-    if (b < 0) return "";
-    return s.substring(a, b);
-  };
-
   WiFiClient *stream = http.getStreamPtr();
   const int CHUNK = 1024;
-  const int OVER = 512;
+  // Pre-reserve for the steady-state size (one chunk plus the
+  // trailing overlap kept after each trim below), so the buffer
+  // settles into that allocation instead of growing/reallocating on
+  // every one of the first few chunks.
   String buf = "";
+  buf.reserve(CHUNK + 2048 + 64);
   int found = 0;
 
   // Clear stationBoardData
@@ -619,11 +613,13 @@ bool ojpPostStream(const String &body) {
     }
 
     if (stream->available()) {
-      uint8_t tmp[CHUNK + 1];
+      uint8_t tmp[CHUNK];
       int n = stream->readBytes(tmp, CHUNK);
       if (n > 0) {
-        tmp[n] = 0;
-        buf += String((char *)tmp);
+        // concat(ptr, length) appends the chunk directly into the
+        // already-reserved buffer, instead of constructing a
+        // temporary String((char*)tmp) just to append it.
+        buf.concat((const char *)tmp, n);
       }
     } else {
       delay(1);
@@ -763,9 +759,12 @@ bool ojpPostStream(const String &body) {
     }
 
     // Trim buffer but keep overlap for cross-chunk tags
-    // StopEventResult blocks can be ~2KB so keep 2KB overlap
+    // StopEventResult blocks can be ~2KB so keep 2KB overlap.
+    // remove() shifts the kept tail left in place; unlike
+    // buf = buf.substring(...), it doesn't allocate a new buffer and
+    // copy into it.
     if (buf.length() > (unsigned)(CHUNK + 2048))
-      buf = buf.substring(buf.length() - 2048);
+      buf.remove(0, buf.length() - 2048);
   }
 
   http.end();
