@@ -373,6 +373,52 @@ void fetchGPSFix() {
 }
 
 // ===========================================================================
+// setupOjpClient()
+// Shared setup for every OJP HTTPS POST request (used by ojpPost() and
+// ojpPostStream()), to avoid duplicating the TLS/HTTP header boilerplate.
+// ===========================================================================
+/**
+ * @brief Configures a WiFiClientSecure + HTTPClient pair for an OJP
+ *        API request and starts a POST call.
+ *
+ * Sets up TLS (certificate check disabled – OJP is accessed only via
+ * its known HTTPS endpoint, no cert bundle is pinned), the shared
+ * timeout, standard headers (Content-Type, Bearer auth, User-Agent),
+ * strict redirect handling, and logs the request. `client` and
+ * `http` must be declared by the caller and stay in scope for as
+ * long as `http` is used, since HTTPClient keeps a reference to
+ * `client` internally.
+ *
+ * @param client    Uninitialized WiFiClientSecure, owned by the caller.
+ * @param http      Uninitialized HTTPClient, owned by the caller.
+ * @param body      Raw OJP XML request body to POST.
+ * @param timeoutMs Timeout in milliseconds, applied to both the TLS
+ *                  client and the HTTP client.
+ * @param logTag    Short tag appended to the "[OJP] POST" log line,
+ *                  e.g. "" or " (stream)", to tell call sites apart
+ *                  in the Serial log.
+ * @return The HTTP status code returned by http.POST(), or a
+ *         negative HTTPClient error code on failure.
+ */
+int startOjpPost(WiFiClientSecure &client, HTTPClient &http,
+                  const String &body, unsigned long timeoutMs,
+                  const char *logTag) {
+  client.setInsecure();
+  client.setTimeout(timeoutMs);
+  http.begin(client, OJP_URL);
+  http.setTimeout(timeoutMs);
+  http.addHeader("Content-Type", "application/xml");
+  http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
+  http.addHeader("User-Agent", "SBB-EPaper-Display/2.0 ESP32");
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  Serial.println("[OJP] POST" + String(logTag) + " to " + String(OJP_URL));
+
+  int code = http.POST(body);
+  Serial.println("[OJP] Response code: " + String(code));
+  return code;
+}
+
+// ===========================================================================
 // ojpPost() – used only for small responses (LocationInfo ~2KB)
 // ===========================================================================
 /**
@@ -388,18 +434,8 @@ void fetchGPSFix() {
  */
 String ojpPost(const String &body) {
   WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(10000);
   HTTPClient http;
-  http.begin(client, OJP_URL);
-  http.setTimeout(10000);
-  http.addHeader("Content-Type", "application/xml");
-  http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
-  http.addHeader("User-Agent", "SBB-EPaper-Display/2.0 ESP32");
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  Serial.println("[OJP] POST to " + String(OJP_URL));
-  int code = http.POST(body);
-  Serial.println("[OJP] Response code: " + String(code));
+  int code = startOjpPost(client, http, body, 10000, "");
   if (code != HTTP_CODE_OK) {
     Serial.println("[OJP] Error: " + http.getString().substring(0, 200));
     http.end();
@@ -521,19 +557,8 @@ int calcDelay(const String &planned,
 // ===========================================================================
 bool ojpPostStream(const String &body) {
   WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(15000);
   HTTPClient http;
-  http.begin(client, OJP_URL);
-  http.setTimeout(15000);
-  http.addHeader("Content-Type", "application/xml");
-  http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
-  http.addHeader("User-Agent", "SBB-EPaper-Display/2.0 ESP32");
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  Serial.println("[OJP] POST (stream) to " + String(OJP_URL));
-
-  int code = http.POST(body);
-  Serial.println("[OJP] Response code: " + String(code));
+  int code = startOjpPost(client, http, body, 15000, " (stream)");
   if (code != HTTP_CODE_OK) {
     Serial.println("[OJP] Error: " + http.getString().substring(0, 200));
     http.end();
