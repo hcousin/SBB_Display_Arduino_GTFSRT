@@ -1050,7 +1050,11 @@ void displayStationData() {
   // Row 1: reverse-geocoded street address
   cursor_x = 250;
   cursor_y = 50;
-  char pos[gpsData.x_coord.length() + 1];
+  // Fixed-size buffer instead of a VLA sized from gpsData.x_coord:
+  // the address comes from an external Nominatim response, so an
+  // unexpectedly long value must not size a stack allocation.
+  // toCharArray() truncates safely to fit and null-terminates.
+  char pos[128];
   gpsData.x_coord.toCharArray(pos, sizeof(pos));
   writeln((GFXfont *)&FiraSans, pos, &cursor_x, &cursor_y, NULL);
 
@@ -1058,7 +1062,9 @@ void displayStationData() {
   cursor_x = 250;
   cursor_y = 200;
   String nStation = stationDataArray[stationIndex].near_station + " " + String(stationDataArray[stationIndex].distance) + " m";
-  char nst[nStation.length() + 1];
+  // Same reasoning: fixed size instead of a VLA sized from the
+  // (externally-sourced) stop name.
+  char nst[128];
   nStation.toCharArray(nst, sizeof(nst));
   writeln((GFXfont *)&FiraSans, nst, &cursor_x, &cursor_y, NULL);
 }
@@ -1090,7 +1096,13 @@ void displayStationBoardData() {
 
     cursor_x = col1_x;
     cursor_y = current_y;
-    char line[stationBoardData[i].line.length() + 1];
+    // Fixed-size buffers instead of VLAs sized from OJP response
+    // data: line names, times and delay text are all bounded in
+    // practice, but sizing a stack array directly from
+    // externally-sourced String::length() is a stack-overflow risk
+    // if the API ever returns something unexpectedly large.
+    // toCharArray() truncates safely to fit and null-terminates.
+    char line[24];
     stationBoardData[i].line.toCharArray(line, sizeof(line));
     writeln((GFXfont *)&FiraSans, line, &cursor_x, &cursor_y, NULL);
 
@@ -1100,7 +1112,7 @@ void displayStationBoardData() {
     writeln((GFXfont *)&FiraSans, dest, &cursor_x, &cursor_y, NULL);
 
     cursor_x = col3_x;
-    char depTime[stationBoardData[i].departure_time.length() + 1];
+    char depTime[8];  // "HH:MM" + margin
     stationBoardData[i].departure_time.toCharArray(depTime, sizeof(depTime));
     writeln((GFXfont *)&FiraSans, depTime, &cursor_x, &cursor_y, NULL);
 
@@ -1108,7 +1120,7 @@ void displayStationBoardData() {
 
     if (stationBoardData[i].delay > 0) {
       String delayStr = "+" + String(stationBoardData[i].delay);
-      char delay[delayStr.length() + 1];
+      char delay[8];  // "+120" + margin, delay is clamped to [0,120] by calcDelay()
       delayStr.toCharArray(delay, sizeof(delay));
       writeln((GFXfont *)&FiraSans, delay, &cursor_x, &cursor_y, NULL);
     }
