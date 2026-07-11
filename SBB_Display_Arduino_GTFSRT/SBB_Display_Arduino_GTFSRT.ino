@@ -48,32 +48,32 @@
 // ---------------------------------------------------------------------------
 // Pin definitions – identical to original
 // ---------------------------------------------------------------------------
-#define BUTTON_1  (21)
-#define BATT_PIN  (14)
-#define SD_MISO   (16)
-#define SD_MOSI   (15)
-#define SD_SCLK   (11)
-#define SD_CS     (42)
+#define BUTTON_1 (21)
+#define BATT_PIN (14)
+#define SD_MISO (16)
+#define SD_MOSI (15)
+#define SD_SCLK (11)
+#define SD_CS (42)
 #define BOARD_SCL (17)
 #define BOARD_SDA (18)
 #define GPIO_MISO (45)
 #define GPIO_MOSI (10)
 #define GPIO_SCLK (48)
-#define GPIO_CS   (39)
+#define GPIO_CS (39)
 
 // GPS UART pins
-#define GPS_RX_PIN         (44)
-#define GPS_TX_PIN         (43)
-#define GPS_BAUD           (9600)
+#define GPS_RX_PIN (44)
+#define GPS_TX_PIN (43)
+#define GPS_BAUD (9600)
 #define GPS_FIX_TIMEOUT_MS (30000)
 
 // OJP API - note: OJP 2.0 endpoint is /ojp20 (not /ojp2020)
-#define OJP_URL      "https://api.opentransportdata.swiss/ojp20"
+#define OJP_URL "https://api.opentransportdata.swiss/ojp20"
 #define OJP_RADIUS_M 500
 
 // Set to false if no GPS module is connected – skips the 30s wait
 // and uses DEFAULT_LAT / DEFAULT_LNG from credentials.h immediately
-#define GPS_ENABLED  false
+#define GPS_ENABLED false
 
 // ---------------------------------------------------------------------------
 // Globals – identical to original
@@ -88,7 +88,7 @@ String yCoord = DEFAULT_LNG;
 int stationIndex = 0;
 const int maxStations = 10;
 StationData stationDataArray[maxStations];
-int stationsFound = 0;   // actual number of stops returned by OJP
+int stationsFound = 0;  // actual number of stops returned by OJP
 String stationID = "";
 const int numEntries = 4;
 StationBoardData stationBoardData[numEntries];
@@ -98,10 +98,10 @@ const unsigned long sleepInterval = 45000;
 
 SensorPCF8563 rtc;
 char buf[128];
-const char *ntpServer1        = "pool.ntp.org";
-const char *ntpServer2        = "time.nist.gov";
-const long  gmtOffset_sec     = 3600;
-const int   daylightOffset_sec = 3600;
+const char *ntpServer1 = "pool.ntp.org";
+const char *ntpServer2 = "time.nist.gov";
+const long gmtOffset_sec = 3600;
+const int daylightOffset_sec = 3600;
 const char *time_zone = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 
 // ---------------------------------------------------------------------------
@@ -113,7 +113,6 @@ void IRAM_ATTR selectStationID() {
 
 void timeavailable(struct timeval *t) {
   Serial.println("[WiFi]: Got time adjustment from NTP!");
-  rtc.hwClockWrite();
 }
 
 // ===========================================================================
@@ -123,24 +122,41 @@ void setup() {
   Serial.begin(115200);
   connectWifi();
 
+  Wire.begin(BOARD_SDA, BOARD_SCL);
+  delay(100);
+
+  Wire.beginTransmission(PCF8563_SLAVE_ADDRESS);
+
+  if (Wire.endTransmission() == 0) {
+    rtc.begin(Wire, PCF8563_SLAVE_ADDRESS, BOARD_SDA, BOARD_SCL);
+    Serial.println("RTC is online");
+  } else {
+    Serial.println("RTC initialization failed!");
+  }
+
   pinMode(BUTTON_1, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(BUTTON_1), selectStationID, RISING);
 
   sntp_set_time_sync_notification_cb(timeavailable);
   configTzTime(time_zone, ntpServer1, ntpServer2);
 
-  Wire.begin(BOARD_SDA, BOARD_SCL);
-  Wire.beginTransmission(PCF8563_SLAVE_ADDRESS);
-  if (Wire.endTransmission() == 0) {
-    rtc.begin(Wire, PCF8563_SLAVE_ADDRESS, BOARD_SDA, BOARD_SCL);
-    Serial.println("RTC initialization failed!");
-  } else {
-    Serial.println("RTC is online");
+  struct tm t;
+  while (!getLocalTime(&t)) {
+    delay(100);
   }
+
+  while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
+    delay(100);
+  }
+
+  Serial.printf("Setup local: %02d:%02d:%02d\n",
+                t.tm_hour,
+                t.tm_min,
+                t.tm_sec);
 
   esp_adc_cal_characteristics_t adc_chars;
   esp_adc_cal_value_t val_type = esp_adc_cal_characterize(
-      ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
+    ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
   if (val_type == ESP_ADC_CAL_VAL_EFUSE_VREF) {
     Serial.printf("eFuse Vref:%u mV", adc_chars.vref);
     vref = adc_chars.vref;
@@ -150,7 +166,8 @@ void setup() {
   framebuffer = (uint8_t *)ps_calloc(sizeof(uint8_t), EPD_WIDTH * EPD_HEIGHT / 2);
   if (!framebuffer) {
     Serial.println("alloc memory failed !!!");
-    while (1);
+    while (1)
+      ;
   }
   memset(framebuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
 
@@ -175,9 +192,14 @@ void setup() {
 // loop() – identical to original
 // ===========================================================================
 void loop() {
-  struct tm timeinfo;
-  rtc.getDateTime(&timeinfo);
-  strftime(buf, 64, "➸ %b %d %Y %H:%M:%S", &timeinfo);
+  struct tm timeInfo;
+
+  if (getLocalTime(&timeInfo)) {
+    strftime(buf, sizeof(buf), "➸ %b %d %Y %H:%M:%S", &timeInfo);
+    Serial.print("NTP: ");
+    Serial.println(buf);
+  }
+  strftime(buf, 64, "➸ %b %d %Y %H:%M:%S", &timeInfo);
   Serial.print("RTC: ");
   Serial.println(buf);
 
@@ -225,8 +247,7 @@ void loop() {
 // Falls back to showing coordinates if the request fails.
 // ===========================================================================
 void fetchGPSAddress() {
-  String url = "https://nominatim.openstreetmap.org/reverse?format=json&lat=" +
-               xCoord + "&lon=" + yCoord + "&zoom=18&addressdetails=1";
+  String url = "https://nominatim.openstreetmap.org/reverse?format=json&lat=" + xCoord + "&lon=" + yCoord + "&zoom=18&addressdetails=1";
 
   WiFiClientSecure client;
   client.setInsecure();
@@ -260,10 +281,10 @@ void fetchGPSAddress() {
 
   // Build a short address from individual fields rather than the full
   // display_name (which includes country, canton etc.)
-  String road    = extractJson(response, "road");
+  String road = extractJson(response, "road");
   String houseNo = extractJson(response, "house_number");
-  String suburb  = extractJson(response, "suburb");
-  String city    = extractJson(response, "city");
+  String suburb = extractJson(response, "suburb");
+  String city = extractJson(response, "city");
   if (city.length() == 0) city = extractJson(response, "town");
   if (city.length() == 0) city = extractJson(response, "village");
 
@@ -323,9 +344,9 @@ String ojpPost(const String &body) {
   HTTPClient http;
   http.begin(client, OJP_URL);
   http.setTimeout(10000);
-  http.addHeader("Content-Type",  "application/xml");
+  http.addHeader("Content-Type", "application/xml");
   http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
-  http.addHeader("User-Agent",    "SBB-EPaper-Display/2.0 ESP32");
+  http.addHeader("User-Agent", "SBB-EPaper-Display/2.0 ESP32");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   Serial.println("[OJP] POST to " + String(OJP_URL));
   int code = http.POST(body);
@@ -342,6 +363,79 @@ String ojpPost(const String &body) {
 }
 
 // ===========================================================================
+// ISO8601 UTC -> lokale HH:MM
+// ===========================================================================
+String isoToHHMM(const String &iso) {
+  // Erwartet: 2026-07-09T12:31:00Z
+
+  int hour = iso.substring(11, 13).toInt();
+  int minute = iso.substring(14, 16).toInt();
+
+  // OJP liefert UTC.
+  // Schweiz im Sommer = UTC+2
+  // Schweiz im Winter = UTC+1
+
+  time_t now;
+  time(&now);
+
+  struct tm localNow;
+  localtime_r(&now, &localNow);
+
+  // Offset zwischen UTC und Lokalzeit bestimmen
+  struct tm utcNow;
+  gmtime_r(&now, &utcNow);
+
+  int offset =
+    (localNow.tm_hour * 60 + localNow.tm_min) - (utcNow.tm_hour * 60 + utcNow.tm_min);
+
+  // Mitternacht berücksichtigen
+  if (offset < -720) offset += 1440;
+  if (offset > 720) offset -= 1440;
+
+  int total = hour * 60 + minute + offset;
+
+  while (total < 0) total += 1440;
+  while (total >= 1440) total -= 1440;
+
+  char buf[6];
+  sprintf(buf, "%02d:%02d", total / 60, total % 60);
+
+  return String(buf);
+}
+
+// ===========================================================================
+// Berechnet die Verspätung in Minuten
+// ===========================================================================
+int calcDelay(const String &planned,
+              const String &estimated) {
+  struct tm tmPlanned = {};
+  struct tm tmEstimated = {};
+
+  if (!strptime(planned.c_str(),
+                "%Y-%m-%dT%H:%M:%SZ",
+                &tmPlanned))
+    return 0;
+
+  if (!strptime(estimated.c_str(),
+                "%Y-%m-%dT%H:%M:%SZ",
+                &tmEstimated))
+    return 0;
+
+  time_t t1 = mktime(&tmPlanned);
+  time_t t2 = mktime(&tmEstimated);
+
+  int delay = (t2 - t1) / 60;
+
+  if (delay < 0)
+    delay = 0;
+
+  if (delay > 120)
+    delay = 120;
+
+  return delay;
+}
+
+// ===========================================================================
 // ojpPostStream()
 // Streams the StopEvent response and extracts departure fields on-the-fly
 // without loading the full ~10KB response into RAM.
@@ -355,9 +449,9 @@ bool ojpPostStream(const String &body) {
   HTTPClient http;
   http.begin(client, OJP_URL);
   http.setTimeout(15000);
-  http.addHeader("Content-Type",  "application/xml");
+  http.addHeader("Content-Type", "application/xml");
   http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
-  http.addHeader("User-Agent",    "SBB-EPaper-Display/2.0 ESP32");
+  http.addHeader("User-Agent", "SBB-EPaper-Display/2.0 ESP32");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   Serial.println("[OJP] POST (stream) to " + String(OJP_URL));
 
@@ -368,24 +462,6 @@ bool ojpPostStream(const String &body) {
     http.end();
     return false;
   }
-
-  // ISO8601 UTC → local HH:MM
-  auto isoToHHMM = [](const String &iso) -> String {
-    if (iso.length() < 16) return "--:--";
-    struct tm t = {};
-    t.tm_year  = iso.substring(0,4).toInt() - 1900;
-    t.tm_mon   = iso.substring(5,7).toInt() - 1;
-    t.tm_mday  = iso.substring(8,10).toInt();
-    t.tm_hour  = iso.substring(11,13).toInt();
-    t.tm_min   = iso.substring(14,16).toInt();
-    t.tm_sec   = 0;
-    t.tm_isdst = -1;
-    time_t utcT = mktime(&t);
-    struct tm *local = localtime(&utcT);
-    char out[6];
-    strftime(out, sizeof(out), "%H:%M", local);
-    return String(out);
-  };
 
   // Helper: extract value between open and close tags
   auto xtag = [](const String &s, const String &open, const String &close) -> String {
@@ -399,84 +475,169 @@ bool ojpPostStream(const String &body) {
 
   WiFiClient *stream = http.getStreamPtr();
   const int CHUNK = 1024;
-  const int OVER  = 512;
-  String    buf   = "";
-  int       found = 0;
+  const int OVER = 512;
+  String buf = "";
+  int found = 0;
 
   // Clear stationBoardData
   for (int i = 0; i < numEntries; i++) {
-    stationBoardData[i].line           = "-";
-    stationBoardData[i].destination    = "";
+    stationBoardData[i].line = "-";
+    stationBoardData[i].destination = "";
     stationBoardData[i].departure_time = "--:--";
-    stationBoardData[i].delay          = 0;
-    stationBoardData[i].type           = "";
-    stationBoardData[i].line_operator  = "";
+    stationBoardData[i].delay = 0;
+    stationBoardData[i].type = "";
+    stationBoardData[i].line_operator = "";
   }
 
   unsigned long t0 = millis();
   while ((stream->connected() || stream->available()) && found < numEntries) {
-    if (millis() - t0 > 14000) { Serial.println("[OJP] Stream timeout"); break; }
+    if (millis() - t0 > 14000) {
+      Serial.println("[OJP] Stream timeout");
+      break;
+    }
 
     if (stream->available()) {
       uint8_t tmp[CHUNK + 1];
       int n = stream->readBytes(tmp, CHUNK);
-      if (n > 0) { tmp[n] = 0; buf += String((char *)tmp); }
-    } else { delay(1); continue; }
+      if (n > 0) {
+        tmp[n] = 0;
+        buf += String((char *)tmp);
+      }
+    } else {
+      delay(1);
+      continue;
+    }
 
     // Extract all complete <StopEventResult>…</StopEventResult> blocks
     // StopEventResult contains both <StopEvent> (times) and <Service>
     // (line name, destination) as siblings - must use the outer wrapper
     while (found < numEntries) {
-      int se_s = buf.indexOf("<StopEventResult>");
-      if (se_s < 0) break;
-      int se_e = buf.indexOf("</StopEventResult>", se_s);
-      if (se_e < 0) break;  // incomplete – read more data
 
-      String block = buf.substring(se_s, se_e + 18); // 18 = len("</StopEventResult>")
-      buf = buf.substring(se_e + 18);  // advance past processed block
+      int start = buf.indexOf("<StopEventResult>");
+      if (start < 0)
+        break;
 
-      String timetabled = xtag(block, "<TimetabledTime>", "</TimetabledTime>");
-      String estimated  = xtag(block, "<EstimatedTime>",  "</EstimatedTime>");
-      String depTime    = isoToHHMM(estimated.length() > 0 ? estimated : timetabled);
+      int end = buf.indexOf("</StopEventResult>", start);
+      if (end < 0)
+        break;
+
+      // ---------- Timetabled ----------
+      String timetabled = "";
+      int p = buf.indexOf("<TimetabledTime>", start);
+      if (p >= 0 && p < end) {
+        p += strlen("<TimetabledTime>");
+        int q = buf.indexOf("</TimetabledTime>", p);
+        if (q > p && q < end)
+          timetabled = buf.substring(p, q);
+      }
+
+      // ---------- Estimated ----------
+      String estimated = "";
+      p = buf.indexOf("<EstimatedTime>", start);
+      if (p >= 0 && p < end) {
+        p += strlen("<EstimatedTime>");
+        int q = buf.indexOf("</EstimatedTime>", p);
+        if (q > p && q < end)
+          estimated = buf.substring(p, q);
+      }
+
+      // ---------- Line ----------
+      String lineName = "";
+
+      // 1. PublicCode (preferred)
+      p = buf.indexOf("<PublicCode>", start);
+      if (p >= 0 && p < end) {
+
+        p += strlen("<PublicCode>");
+
+        int q = buf.indexOf("</PublicCode>", p);
+
+        if (q > p && q < end)
+          lineName = buf.substring(p, q);
+      }
+
+      // 2. Fallback: PublishedServiceName
+      if (lineName.length() == 0) {
+
+        p = buf.indexOf("<PublishedServiceName>", start);
+
+        if (p >= 0 && p < end) {
+
+          p = buf.indexOf("<Text", p);
+
+          if (p >= 0 && p < end) {
+
+            p = buf.indexOf(">", p);
+
+            if (p >= 0 && p < end) {
+
+              p++;
+
+              int q = buf.indexOf("</Text>", p);
+
+              if (q > p && q < end)
+                lineName = buf.substring(p, q);
+            }
+          }
+        }
+      }
+
+      // ---------- Destination ----------
+      String dest = "";
+
+      p = buf.indexOf("<DestinationText>", start);
+      if (p >= 0 && p < end) {
+
+        p = buf.indexOf("<Text", p);
+
+        if (p >= 0 && p < end) {
+
+          p = buf.indexOf(">", p);
+
+          if (p >= 0 && p < end) {
+
+            p++;
+
+            int q = buf.indexOf("</Text>", p);
+
+            if (q > p && q < end)
+              dest = buf.substring(p, q);
+          }
+        }
+      }
+
+      Serial.println("----------------");
+      Serial.println("Timetabled = " + timetabled);
+      Serial.println("Estimated  = " + estimated);
+
+      String depTime = isoToHHMM(
+        estimated.length() ? estimated : timetabled);
 
       int delayMin = 0;
-      if (estimated.length() > 0 && timetabled.length() > 0) {
-        int tH = timetabled.substring(11,13).toInt();
-        int tM = timetabled.substring(14,16).toInt();
-        int eH = estimated.substring(11,13).toInt();
-        int eM = estimated.substring(14,16).toInt();
-        delayMin = (eH*60 + eM) - (tH*60 + tM);
-        if (delayMin < 0) delayMin += 1440;
+
+      if (!timetabled.isEmpty() && !estimated.isEmpty()) {
+        delayMin = calcDelay(timetabled, estimated);
       }
 
-      // Line name – in <Service><PublishedLineName>
-      String lineName = xtag(block, "<PublishedLineName><Text xml:lang=\"de\">", "</Text>");
-      if (lineName.length() == 0)
-        lineName = xtag(block, "<PublishedLineName><Text>", "</Text>");
+      stationBoardData[found].line =
+        lineName.length() ? lineName : "-";
 
-      // Destination – in <Service><DestinationText>
-      String dest = xtag(block, "<DestinationText><Text xml:lang=\"de\">", "</Text>");
-      if (dest.length() == 0)
-        dest = xtag(block, "<DestinationText><Text>", "</Text>");
-
-      // Debug: print first block so we can verify tag names
-      if (found == 0) {
-        Serial.println("[OJP] Block0 (first 400): " + block.substring(0, 400));
-        Serial.println("[OJP] Block0 (400-800): "   + block.substring(400, 800));
-      }
-
-      stationBoardData[found].line           = lineName.length() > 0 ? lineName : "-";
-      stationBoardData[found].destination    = dest;
+      stationBoardData[found].destination = dest;
       stationBoardData[found].departure_time = depTime;
-      stationBoardData[found].delay          = delayMin;
+      stationBoardData[found].delay = delayMin;
 
-      Serial.printf("[OJP] %d: '%s' → '%s'  %s  +%d\n",
-                    found,
-                    stationBoardData[found].line.c_str(),
-                    stationBoardData[found].destination.c_str(),
-                    stationBoardData[found].departure_time.c_str(),
-                    delayMin);
+      Serial.printf(
+        "[OJP] %d: '%s' -> '%s' %s +%d\n",
+        found,
+        lineName.c_str(),
+        dest.c_str(),
+        depTime.c_str(),
+        delayMin);
+
       found++;
+
+      // Remove processed StopEventResult
+      buf.remove(0, end + strlen("</StopEventResult>"));
     }
 
     // Trim buffer but keep overlap for cross-chunk tags
@@ -512,7 +673,8 @@ String extractTag(const String &xml, const String &open,
 void fetchStationDataFromGPS() {
   Serial.println("[OJP] LocationInfo lat=" + xCoord + " lng=" + yCoord);
 
-  time_t now; time(&now);
+  time_t now;
+  time(&now);
   struct tm *utc = gmtime(&now);
   char tsNow[25];
   strftime(tsNow, sizeof(tsNow), "%Y-%m-%dT%H:%M:%SZ", utc);
@@ -525,36 +687,42 @@ void fetchStationDataFromGPS() {
     " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
     "<OJPRequest>"
     "<siri:ServiceRequest>"
-    "<siri:RequestTimestamp>" + String(tsNow) + "</siri:RequestTimestamp>"
-    "<siri:RequestorRef>SBB-EPaper-Display_prod</siri:RequestorRef>"
-    "<OJPLocationInformationRequest>"
-    "<siri:RequestTimestamp>" + String(tsNow) + "</siri:RequestTimestamp>"
-    "<siri:MessageIdentifier>LIR-1</siri:MessageIdentifier>"
-    "<InitialInput>"
-    "<GeoRestriction>"
-    "<Circle>"
-    "<Center>"
-    "<siri:Longitude>" + yCoord + "</siri:Longitude>"
-    "<siri:Latitude>"  + xCoord + "</siri:Latitude>"
-    "</Center>"
-    "<Radius>" + String(OJP_RADIUS_M) + "</Radius>"
-    "</Circle>"
-    "</GeoRestriction>"
-    "</InitialInput>"
-    "<Restrictions>"
-    "<Type>stop</Type>"
-    "<NumberOfResults>" + String(maxStations) + "</NumberOfResults>"
-    "</Restrictions>"
-    "</OJPLocationInformationRequest>"
-    "</siri:ServiceRequest>"
-    "</OJPRequest>"
-    "</OJP>";
+    "<siri:RequestTimestamp>"
+    + String(tsNow) + "</siri:RequestTimestamp>"
+                      "<siri:RequestorRef>SBB-EPaper-Display_prod</siri:RequestorRef>"
+                      "<OJPLocationInformationRequest>"
+                      "<siri:RequestTimestamp>"
+    + String(tsNow) + "</siri:RequestTimestamp>"
+                      "<siri:MessageIdentifier>LIR-1</siri:MessageIdentifier>"
+                      "<InitialInput>"
+                      "<GeoRestriction>"
+                      "<Circle>"
+                      "<Center>"
+                      "<siri:Longitude>"
+    + yCoord + "</siri:Longitude>"
+               "<siri:Latitude>"
+    + xCoord + "</siri:Latitude>"
+               "</Center>"
+               "<Radius>"
+    + String(OJP_RADIUS_M) + "</Radius>"
+                             "</Circle>"
+                             "</GeoRestriction>"
+                             "</InitialInput>"
+                             "<Restrictions>"
+                             "<Type>stop</Type>"
+                             "<NumberOfResults>"
+    + String(maxStations) + "</NumberOfResults>"
+                            "</Restrictions>"
+                            "</OJPLocationInformationRequest>"
+                            "</siri:ServiceRequest>"
+                            "</OJPRequest>"
+                            "</OJP>";
 
   String response = ojpPost(body);
   if (response.length() == 0) return;
   Serial.println("[OJP] LocationInfo full response: " + response);
 
-  const String LOC_OPEN  = "<PlaceResult>";
+  const String LOC_OPEN = "<PlaceResult>";
   const String LOC_CLOSE = "</PlaceResult>";
   int found = 0, pos = 0;
   String firstStopName = "";
@@ -571,12 +739,12 @@ void fetchStationDataFromGPS() {
     // <StopPlaceRef>8590633</StopPlaceRef>
     // <StopPlaceName><Text xml:lang="de">Glattpark, Chavez-Allee</Text></StopPlaceName>
     // <GeoPosition><siri:Longitude>8.56</siri:Longitude><siri:Latitude>47.42</siri:Latitude></GeoPosition>
-    String stopRef  = extractTag(block, "<StopPlaceRef>",  "</StopPlaceRef>");
+    String stopRef = extractTag(block, "<StopPlaceRef>", "</StopPlaceRef>");
     String stopName = extractTag(block, "<StopPlaceName><Text xml:lang=\"de\">", "</Text>");
     if (stopName.length() == 0)
       stopName = extractTag(block, "<StopPlaceName><Text>", "</Text>");
-    String latStr   = extractTag(block, "<siri:Latitude>",  "</siri:Latitude>");
-    String lngStr   = extractTag(block, "<siri:Longitude>", "</siri:Longitude>");
+    String latStr = extractTag(block, "<siri:Latitude>", "</siri:Latitude>");
+    String lngStr = extractTag(block, "<siri:Longitude>", "</siri:Longitude>");
 
     if (stopRef.length() == 0 || stopName.length() == 0) continue;
     if (found == 0) firstStopName = stopName;
@@ -588,15 +756,14 @@ void fetchStationDataFromGPS() {
     if (stopLat != 0.0 && stopLng != 0.0) {
       double dLat = (stopLat - myLat) * PI / 180.0;
       double dLng = (stopLng - myLng) * PI / 180.0;
-      double a = sin(dLat/2)*sin(dLat/2) +
-                 cos(myLat*PI/180.0)*cos(stopLat*PI/180.0)*sin(dLng/2)*sin(dLng/2);
+      double a = sin(dLat / 2) * sin(dLat / 2) + cos(myLat * PI / 180.0) * cos(stopLat * PI / 180.0) * sin(dLng / 2) * sin(dLng / 2);
       dist = (int)(6371000.0 * 2.0 * atan2(sqrt(a), sqrt(1.0 - a)));
     }
 
-    stationDataArray[found].gps_address  = firstStopName;
+    stationDataArray[found].gps_address = firstStopName;
     stationDataArray[found].near_station = stopName;
-    stationDataArray[found].distance     = dist;
-    stationDataArray[found].station_id   = stopRef;
+    stationDataArray[found].distance = dist;
+    stationDataArray[found].station_id = stopRef;
 
     Serial.printf("[OJP] Stop %d: %s  id=%s  dist=%dm\n",
                   found, stopName.c_str(), stopRef.c_str(), dist);
@@ -606,8 +773,7 @@ void fetchStationDataFromGPS() {
   if (found > 0) {
     stationsFound = found;
     stationID = stationDataArray[stationIndex].station_id;
-    Serial.println("[OJP] Active: " + stationDataArray[stationIndex].near_station +
-                   " (" + String(stationDataArray[stationIndex].distance) + "m)");
+    Serial.println("[OJP] Active: " + stationDataArray[stationIndex].near_station + " (" + String(stationDataArray[stationIndex].distance) + "m)");
   }
 }
 
@@ -623,7 +789,8 @@ void fetchStationBoardData() {
   stationID = stationDataArray[stationIndex].station_id;
   Serial.println("[OJP] StopEvent for: " + stationID);
 
-  time_t now; time(&now);
+  time_t now;
+  time(&now);
   struct tm *utc = gmtime(&now);
   char tsNow[25];
   strftime(tsNow, sizeof(tsNow), "%Y-%m-%dT%H:%M:%SZ", utc);
@@ -636,27 +803,32 @@ void fetchStationBoardData() {
     " version=\"2.0\">"
     "<OJPRequest>"
     "<siri:ServiceRequest>"
-    "<siri:RequestTimestamp>" + String(tsNow) + "</siri:RequestTimestamp>"
-    "<siri:RequestorRef>SBB-EPaper-Display_prod</siri:RequestorRef>"
-    "<OJPStopEventRequest>"
-    "<siri:RequestTimestamp>" + String(tsNow) + "</siri:RequestTimestamp>"
-    "<siri:MessageIdentifier>SER-1</siri:MessageIdentifier>"
-    "<Location>"
-    "<PlaceRef>"
-    "<siri:StopPointRef>" + stationID + "</siri:StopPointRef>"
-    "<Name><Text>stop</Text></Name>"
-    "</PlaceRef>"
-    "<DepArrTime>" + String(tsNow) + "</DepArrTime>"
-    "</Location>"
-    "<Params>"
-    "<NumberOfResults>" + String(numEntries) + "</NumberOfResults>"
-    "<StopEventType>departure</StopEventType>"
-    "<UseRealtimeData>full</UseRealtimeData>"
-    "</Params>"
-    "</OJPStopEventRequest>"
-    "</siri:ServiceRequest>"
-    "</OJPRequest>"
-    "</OJP>";
+    "<siri:RequestTimestamp>"
+    + String(tsNow) + "</siri:RequestTimestamp>"
+                      "<siri:RequestorRef>SBB-EPaper-Display_prod</siri:RequestorRef>"
+                      "<OJPStopEventRequest>"
+                      "<siri:RequestTimestamp>"
+    + String(tsNow) + "</siri:RequestTimestamp>"
+                      "<siri:MessageIdentifier>SER-1</siri:MessageIdentifier>"
+                      "<Location>"
+                      "<PlaceRef>"
+                      "<siri:StopPointRef>"
+    + stationID + "</siri:StopPointRef>"
+                  "<Name><Text>stop</Text></Name>"
+                  "</PlaceRef>"
+                  "<DepArrTime>"
+    + String(tsNow) + "</DepArrTime>"
+                      "</Location>"
+                      "<Params>"
+                      "<NumberOfResults>"
+    + String(numEntries) + "</NumberOfResults>"
+                           "<StopEventType>departure</StopEventType>"
+                           "<UseRealtimeData>full</UseRealtimeData>"
+                           "</Params>"
+                           "</OJPStopEventRequest>"
+                           "</siri:ServiceRequest>"
+                           "</OJPRequest>"
+                           "</OJP>";
 
   ojpPostStream(body);
 }
@@ -675,27 +847,30 @@ void readBatVoltage() {
 
 void title() {
   int32_t cursor_x, cursor_y;
-  cursor_x = 30; cursor_y = 50;
+  cursor_x = 30;
+  cursor_y = 50;
   writeln((GFXfont *)&FiraSans, (char *)"GPS: ", &cursor_x, &cursor_y, NULL);
-  cursor_x = 30; cursor_y = 200;
+  cursor_x = 30;
+  cursor_y = 200;
   writeln((GFXfont *)&FiraSans, (char *)"Haltestelle: ", &cursor_x, &cursor_y, NULL);
 }
 
 void displayStationData() {
   int32_t cursor_x, cursor_y;
-  epd_clear_area({ 250, 10,  700, 50 });
+  epd_clear_area({ 250, 10, 700, 50 });
   epd_clear_area({ 250, 160, 700, 50 });
 
   // Row 1: reverse-geocoded street address
-  cursor_x = 250; cursor_y = 50;
+  cursor_x = 250;
+  cursor_y = 50;
   char pos[gpsData.x_coord.length() + 1];
   gpsData.x_coord.toCharArray(pos, sizeof(pos));
   writeln((GFXfont *)&FiraSans, pos, &cursor_x, &cursor_y, NULL);
 
   // Row 2: nearest stop name + distance
-  cursor_x = 250; cursor_y = 200;
-  String nStation = stationDataArray[stationIndex].near_station + " " +
-                    String(stationDataArray[stationIndex].distance) + " m";
+  cursor_x = 250;
+  cursor_y = 200;
+  String nStation = stationDataArray[stationIndex].near_station + " " + String(stationDataArray[stationIndex].distance) + " m";
   char nst[nStation.length() + 1];
   nStation.toCharArray(nst, sizeof(nst));
   writeln((GFXfont *)&FiraSans, nst, &cursor_x, &cursor_y, NULL);
@@ -703,24 +878,25 @@ void displayStationData() {
 
 void displayStationBoardData() {
   int32_t cursor_x, cursor_y;
-  const int base_y     = 300;
+  const int base_y = 300;
   const int row_height = 55;
-  const int col1_x     = 30;
-  const int col2_x     = 100;
-  const int col3_x     = 765;
-  const int col4_x     = 855;
+  const int col1_x = 30;
+  const int col2_x = 100;
+  const int col3_x = 765;
+  const int col4_x = 855;
 
   for (int i = 0; i < numEntries; i++) {
     int current_y = base_y + (i * row_height);
     epd_clear_area({ col1_x - 2, current_y - 45, 910, row_height + 5 });
 
-    cursor_x = col1_x; cursor_y = current_y;
+    cursor_x = col1_x;
+    cursor_y = current_y;
     char line[stationBoardData[i].line.length() + 1];
     stationBoardData[i].line.toCharArray(line, sizeof(line));
     writeln((GFXfont *)&FiraSans, line, &cursor_x, &cursor_y, NULL);
 
     cursor_x = col2_x;
-    char dest[stationBoardData[i].destination.length() + 1];
+    char dest[128];
     stationBoardData[i].destination.toCharArray(dest, sizeof(dest));
     writeln((GFXfont *)&FiraSans, dest, &cursor_x, &cursor_y, NULL);
 
@@ -730,10 +906,13 @@ void displayStationBoardData() {
     writeln((GFXfont *)&FiraSans, depTime, &cursor_x, &cursor_y, NULL);
 
     cursor_x = col4_x;
-    String delayStr = " + " + String(stationBoardData[i].delay);
-    char delay[delayStr.length() + 1];
-    delayStr.toCharArray(delay, sizeof(delay));
-    writeln((GFXfont *)&FiraSans, delay, &cursor_x, &cursor_y, NULL);
+
+    if (stationBoardData[i].delay > 0) {
+      String delayStr = "+" + String(stationBoardData[i].delay);
+      char delay[delayStr.length() + 1];
+      delayStr.toCharArray(delay, sizeof(delay));
+      writeln((GFXfont *)&FiraSans, delay, &cursor_x, &cursor_y, NULL);
+    }
   }
 }
 
@@ -741,18 +920,26 @@ void displayTime() {
   int32_t cursor_x = 500, cursor_y = 100;
   Rect_t clearRect = { 498, 55, 125, 55 };
   epd_clear_area(clearRect);
+
   struct tm timeInfo;
-  rtc.getDateTime(&timeInfo);
-  char timeBuffer[6];
-  strftime(timeBuffer, sizeof(timeBuffer), "%H:%M", &timeInfo);
-  writeln((GFXfont *)&FiraSans, timeBuffer, &cursor_x, &cursor_y, NULL);
+
+  if (getLocalTime(&timeInfo)) {
+
+    char timeBuffer[6];
+    strftime(timeBuffer, sizeof(timeBuffer), "%H:%M", &timeInfo);
+
+    writeln((GFXfont *)&FiraSans, timeBuffer, &cursor_x, &cursor_y, NULL);
+  }
 }
 
 void connectWifi() {
   Serial.println("Connecting to ");
   Serial.println(ssid);
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
   Serial.println("");
   Serial.println("WiFi connected");
   Serial.println(WiFi.localIP());
