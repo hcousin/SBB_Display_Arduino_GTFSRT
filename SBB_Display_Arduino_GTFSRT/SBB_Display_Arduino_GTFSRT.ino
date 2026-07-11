@@ -76,6 +76,26 @@
 #define GPS_ENABLED false
 
 // ---------------------------------------------------------------------------
+// Debug logging
+// ---------------------------------------------------------------------------
+// Set to 0 to compile all diagnostic Serial output out of the binary
+// entirely (the DBG_* calls below expand to nothing, they are not
+// just silenced at runtime). Useful once the device is set up and
+// running unattended, to save the per-call formatting/UART time in
+// loop() and drop the log string literals from flash.
+#define DEBUG_LOG 1
+
+#if DEBUG_LOG
+#define DBG_PRINT(...) Serial.print(__VA_ARGS__)
+#define DBG_PRINTLN(...) Serial.println(__VA_ARGS__)
+#define DBG_PRINTF(...) Serial.printf(__VA_ARGS__)
+#else
+#define DBG_PRINT(...)
+#define DBG_PRINTLN(...)
+#define DBG_PRINTF(...)
+#endif
+
+// ---------------------------------------------------------------------------
 // Globals – identical to original
 // ---------------------------------------------------------------------------
 uint8_t *framebuffer;
@@ -124,7 +144,7 @@ void IRAM_ATTR selectStationID() {
  * @param t Pointer to the new time value (unused, informational only).
  */
 void timeavailable(struct timeval *t) {
-  Serial.println("[WiFi]: Got time adjustment from NTP!");
+  DBG_PRINTLN("[WiFi]: Got time adjustment from NTP!");
 }
 
 // ===========================================================================
@@ -154,9 +174,9 @@ void setup() {
 
   if (Wire.endTransmission() == 0) {
     rtc.begin(Wire, PCF8563_SLAVE_ADDRESS, BOARD_SDA, BOARD_SCL);
-    Serial.println("RTC is online");
+    DBG_PRINTLN("RTC is online");
   } else {
-    Serial.println("RTC initialization failed!");
+    DBG_PRINTLN("RTC initialization failed!");
   }
 
   pinMode(BUTTON_1, INPUT_PULLUP);
@@ -174,7 +194,7 @@ void setup() {
     delay(100);
   }
 
-  Serial.printf("Setup local: %02d:%02d:%02d\n",
+  DBG_PRINTF("Setup local: %02d:%02d:%02d\n",
                 t.tm_hour,
                 t.tm_min,
                 t.tm_sec);
@@ -183,14 +203,14 @@ void setup() {
   esp_adc_cal_value_t val_type = esp_adc_cal_characterize(
     ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
   if (val_type == ESP_ADC_CAL_VAL_EFUSE_VREF) {
-    Serial.printf("eFuse Vref:%u mV", adc_chars.vref);
+    DBG_PRINTF("eFuse Vref:%u mV", adc_chars.vref);
     vref = adc_chars.vref;
   }
 
   epd_init();
   framebuffer = (uint8_t *)ps_calloc(sizeof(uint8_t), EPD_WIDTH * EPD_HEIGHT / 2);
   if (!framebuffer) {
-    Serial.println("alloc memory failed !!!");
+    DBG_PRINTLN("alloc memory failed !!!");
     while (1)
       ;
   }
@@ -200,7 +220,7 @@ void setup() {
   epd_clear();
   epd_poweroff();
 
-  Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
+  DBG_PRINTF("Free heap: %d bytes\n", ESP.getFreeHeap());
 
   fetchGPSFix();
   fetchGPSAddress();
@@ -234,21 +254,21 @@ void loop() {
 
   if (getLocalTime(&timeInfo)) {
     strftime(buf, sizeof(buf), "➸ %b %d %Y %H:%M:%S", &timeInfo);
-    Serial.print("NTP: ");
-    Serial.println(buf);
+    DBG_PRINT("NTP: ");
+    DBG_PRINTLN(buf);
   }
   strftime(buf, 64, "➸ %b %d %Y %H:%M:%S", &timeInfo);
-  Serial.print("RTC: ");
-  Serial.println(buf);
+  DBG_PRINT("RTC: ");
+  DBG_PRINTLN(buf);
 
   readBatVoltage();
   epd_poweron();
   displayTime();
   epd_poweroff();
 
-  Serial.println(buttonPressed);
-  Serial.print("Station Index before if = ");
-  Serial.println(stationIndex);
+  DBG_PRINTLN(buttonPressed);
+  DBG_PRINT("Station Index before if = ");
+  DBG_PRINTLN(stationIndex);
 
   if (buttonPressed) {
     if (stationIndex >= stationsFound - 1) {
@@ -273,7 +293,7 @@ void loop() {
   while (!buttonPressed && (millis() - startTime < sleepInterval)) {
     delay(10);
   }
-  Serial.println("Nach 45s");
+  DBG_PRINTLN("Nach 45s");
 }
 
 // ===========================================================================
@@ -296,7 +316,7 @@ void fetchGPSAddress() {
 
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
-    Serial.println("[Nominatim] HTTP error: " + String(code));
+    DBG_PRINTLN("[Nominatim] HTTP error: " + String(code));
     gpsData.x_coord = xCoord + " / " + yCoord;
     http.end();
     return;
@@ -341,7 +361,7 @@ void fetchGPSAddress() {
 
   if (address.length() == 0) address = xCoord + " / " + yCoord;
 
-  Serial.println("[Nominatim] Address: " + address);
+  DBG_PRINTLN("[Nominatim] Address: " + address);
   gpsData.x_coord = address;
 }
 
@@ -351,11 +371,11 @@ void fetchGPSAddress() {
 // ===========================================================================
 void fetchGPSFix() {
   if (!GPS_ENABLED) {
-    Serial.println("[GPS] GPS_ENABLED=false – using fallback coordinates.");
-    Serial.println("[GPS] lat=" + xCoord + " lng=" + yCoord);
+    DBG_PRINTLN("[GPS] GPS_ENABLED=false – using fallback coordinates.");
+    DBG_PRINTLN("[GPS] lat=" + xCoord + " lng=" + yCoord);
     return;
   }
-  Serial.println("[GPS] Waiting for fix...");
+  DBG_PRINTLN("[GPS] Waiting for fix...");
   Serial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
   TinyGPSPlus gpsLocal;
   unsigned long startMs = millis();
@@ -364,12 +384,12 @@ void fetchGPSFix() {
     if (gpsLocal.location.isValid() && gpsLocal.location.age() < 2000) {
       xCoord = String(gpsLocal.location.lat(), 9);
       yCoord = String(gpsLocal.location.lng(), 9);
-      Serial.println("[GPS] Fix: lat=" + xCoord + " lng=" + yCoord);
+      DBG_PRINTLN("[GPS] Fix: lat=" + xCoord + " lng=" + yCoord);
       return;
     }
     delay(100);
   }
-  Serial.println("[GPS] No fix – using fallback coordinates.");
+  DBG_PRINTLN("[GPS] No fix – using fallback coordinates.");
 }
 
 // ===========================================================================
@@ -411,10 +431,10 @@ int startOjpPost(WiFiClientSecure &client, HTTPClient &http,
   http.addHeader("Authorization", String("Bearer ") + OJP_API_KEY);
   http.addHeader("User-Agent", "SBB-EPaper-Display/2.0 ESP32");
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  Serial.println("[OJP] POST" + String(logTag) + " to " + String(OJP_URL));
+  DBG_PRINTLN("[OJP] POST" + String(logTag) + " to " + String(OJP_URL));
 
   int code = http.POST(body);
-  Serial.println("[OJP] Response code: " + String(code));
+  DBG_PRINTLN("[OJP] Response code: " + String(code));
   return code;
 }
 
@@ -437,12 +457,12 @@ String ojpPost(const String &body) {
   HTTPClient http;
   int code = startOjpPost(client, http, body, 10000, "");
   if (code != HTTP_CODE_OK) {
-    Serial.println("[OJP] Error: " + http.getString().substring(0, 200));
+    DBG_PRINTLN("[OJP] Error: " + http.getString().substring(0, 200));
     http.end();
     return "";
   }
   String response = http.getString();
-  Serial.println("[OJP] Response length: " + String(response.length()));
+  DBG_PRINTLN("[OJP] Response length: " + String(response.length()));
   http.end();
   return response;
 }
@@ -560,7 +580,7 @@ bool ojpPostStream(const String &body) {
   HTTPClient http;
   int code = startOjpPost(client, http, body, 15000, " (stream)");
   if (code != HTTP_CODE_OK) {
-    Serial.println("[OJP] Error: " + http.getString().substring(0, 200));
+    DBG_PRINTLN("[OJP] Error: " + http.getString().substring(0, 200));
     http.end();
     return false;
   }
@@ -594,7 +614,7 @@ bool ojpPostStream(const String &body) {
   unsigned long t0 = millis();
   while ((stream->connected() || stream->available()) && found < numEntries) {
     if (millis() - t0 > 14000) {
-      Serial.println("[OJP] Stream timeout");
+      DBG_PRINTLN("[OJP] Stream timeout");
       break;
     }
 
@@ -708,9 +728,9 @@ bool ojpPostStream(const String &body) {
         }
       }
 
-      Serial.println("----------------");
-      Serial.println("Timetabled = " + timetabled);
-      Serial.println("Estimated  = " + estimated);
+      DBG_PRINTLN("----------------");
+      DBG_PRINTLN("Timetabled = " + timetabled);
+      DBG_PRINTLN("Estimated  = " + estimated);
 
       String depTime = isoToHHMM(
         estimated.length() ? estimated : timetabled);
@@ -728,7 +748,7 @@ bool ojpPostStream(const String &body) {
       stationBoardData[found].departure_time = depTime;
       stationBoardData[found].delay = delayMin;
 
-      Serial.printf(
+      DBG_PRINTF(
         "[OJP] %d: '%s' -> '%s' %s +%d\n",
         found,
         lineName.c_str(),
@@ -749,7 +769,7 @@ bool ojpPostStream(const String &body) {
   }
 
   http.end();
-  Serial.printf("[OJP] Stream done, %d departures, heap=%d\n", found, ESP.getFreeHeap());
+  DBG_PRINTF("[OJP] Stream done, %d departures, heap=%d\n", found, ESP.getFreeHeap());
   return found > 0;
 }
 
@@ -799,7 +819,7 @@ String extractTag(const String &xml, const String &open,
  * returns no usable results.
  */
 void fetchStationDataFromGPS() {
-  Serial.println("[OJP] LocationInfo lat=" + xCoord + " lng=" + yCoord);
+  DBG_PRINTLN("[OJP] LocationInfo lat=" + xCoord + " lng=" + yCoord);
 
   time_t now;
   time(&now);
@@ -860,7 +880,7 @@ void fetchStationDataFromGPS() {
 
   String response = ojpPost(body);
   if (response.length() == 0) return;
-  Serial.println("[OJP] LocationInfo full response: " + response);
+  DBG_PRINTLN("[OJP] LocationInfo full response: " + response);
 
   const String LOC_OPEN = "<PlaceResult>";
   const String LOC_CLOSE = "</PlaceResult>";
@@ -905,7 +925,7 @@ void fetchStationDataFromGPS() {
     stationDataArray[found].distance = dist;
     stationDataArray[found].station_id = stopRef;
 
-    Serial.printf("[OJP] Stop %d: %s  id=%s  dist=%dm\n",
+    DBG_PRINTF("[OJP] Stop %d: %s  id=%s  dist=%dm\n",
                   found, stopName.c_str(), stopRef.c_str(), dist);
     found++;
   }
@@ -913,7 +933,7 @@ void fetchStationDataFromGPS() {
   if (found > 0) {
     stationsFound = found;
     stationID = stationDataArray[stationIndex].station_id;
-    Serial.println("[OJP] Active: " + stationDataArray[stationIndex].near_station + " (" + String(stationDataArray[stationIndex].distance) + "m)");
+    DBG_PRINTLN("[OJP] Active: " + stationDataArray[stationIndex].near_station + " (" + String(stationDataArray[stationIndex].distance) + "m)");
   }
 }
 
@@ -936,7 +956,7 @@ void fetchStationBoardData() {
   if (stationDataArray[stationIndex].station_id.length() == 0) return;
 
   stationID = stationDataArray[stationIndex].station_id;
-  Serial.println("[OJP] StopEvent for: " + stationID);
+  DBG_PRINTLN("[OJP] StopEvent for: " + stationID);
 
   time_t now;
   time(&now);
@@ -1010,7 +1030,7 @@ void readBatVoltage() {
   uint16_t v = analogRead(BATT_PIN);
   float battery_voltage = ((float)v / 4095.0) * 2.0 * 3.3 * (vref / 1000.0);
   if (battery_voltage >= 4.2) battery_voltage = 4.2;
-  Serial.println("➸ Voltage: " + String(battery_voltage) + "V");
+  DBG_PRINTLN("➸ Voltage: " + String(battery_voltage) + "V");
 }
 
 /**
@@ -1160,14 +1180,14 @@ void displayTime() {
  * wrong SSID/password will hang here indefinitely.
  */
 void connectWifi() {
-  Serial.println("Connecting to ");
-  Serial.println(ssid);
+  DBG_PRINTLN("Connecting to ");
+  DBG_PRINTLN(ssid);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    Serial.print(".");
+    DBG_PRINT(".");
   }
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println(WiFi.localIP());
+  DBG_PRINTLN("");
+  DBG_PRINTLN("WiFi connected");
+  DBG_PRINTLN(WiFi.localIP());
 }
