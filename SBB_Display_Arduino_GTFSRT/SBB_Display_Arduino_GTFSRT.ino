@@ -807,7 +807,13 @@ void fetchStationDataFromGPS() {
   char tsNow[25];
   strftime(tsNow, sizeof(tsNow), "%Y-%m-%dT%H:%M:%SZ", utc);
 
-  String body =
+  // Pre-reserve the buffer once, sized generously for the final XML
+  // (~650 chars), so the incremental += calls below fill in place
+  // instead of triggering repeated heap reallocations/copies as the
+  // String grows chunk by chunk.
+  String body;
+  body.reserve(700);
+  body =
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
     "<OJP xmlns=\"http://www.vdv.de/ojp\""
     " xmlns:siri=\"http://www.siri.org.uk/siri\""
@@ -815,36 +821,42 @@ void fetchStationDataFromGPS() {
     " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
     "<OJPRequest>"
     "<siri:ServiceRequest>"
-    "<siri:RequestTimestamp>"
-    + String(tsNow) + "</siri:RequestTimestamp>"
-                      "<siri:RequestorRef>SBB-EPaper-Display_prod</siri:RequestorRef>"
-                      "<OJPLocationInformationRequest>"
-                      "<siri:RequestTimestamp>"
-    + String(tsNow) + "</siri:RequestTimestamp>"
-                      "<siri:MessageIdentifier>LIR-1</siri:MessageIdentifier>"
-                      "<InitialInput>"
-                      "<GeoRestriction>"
-                      "<Circle>"
-                      "<Center>"
-                      "<siri:Longitude>"
-    + yCoord + "</siri:Longitude>"
-               "<siri:Latitude>"
-    + xCoord + "</siri:Latitude>"
-               "</Center>"
-               "<Radius>"
-    + String(OJP_RADIUS_M) + "</Radius>"
-                             "</Circle>"
-                             "</GeoRestriction>"
-                             "</InitialInput>"
-                             "<Restrictions>"
-                             "<Type>stop</Type>"
-                             "<NumberOfResults>"
-    + String(maxStations) + "</NumberOfResults>"
-                            "</Restrictions>"
-                            "</OJPLocationInformationRequest>"
-                            "</siri:ServiceRequest>"
-                            "</OJPRequest>"
-                            "</OJP>";
+    "<siri:RequestTimestamp>";
+  body += tsNow;
+  body += "</siri:RequestTimestamp>"
+          "<siri:RequestorRef>SBB-EPaper-Display_prod</siri:RequestorRef>"
+          "<OJPLocationInformationRequest>"
+          "<siri:RequestTimestamp>";
+  body += tsNow;
+  body += "</siri:RequestTimestamp>"
+          "<siri:MessageIdentifier>LIR-1</siri:MessageIdentifier>"
+          "<InitialInput>"
+          "<GeoRestriction>"
+          "<Circle>"
+          "<Center>"
+          "<siri:Longitude>";
+  body += yCoord;
+  body += "</siri:Longitude>"
+          "<siri:Latitude>";
+  body += xCoord;
+  body += "</siri:Latitude>"
+          "</Center>"
+          "<Radius>";
+  body += OJP_RADIUS_M;
+  body += "</Radius>"
+          "</Circle>"
+          "</GeoRestriction>"
+          "</InitialInput>"
+          "<Restrictions>"
+          "<Type>stop</Type>"
+          "<NumberOfResults>";
+  body += maxStations;
+  body += "</NumberOfResults>"
+          "</Restrictions>"
+          "</OJPLocationInformationRequest>"
+          "</siri:ServiceRequest>"
+          "</OJPRequest>"
+          "</OJP>";
 
   String response = ojpPost(body);
   if (response.length() == 0) return;
@@ -932,7 +944,12 @@ void fetchStationBoardData() {
   char tsNow[25];
   strftime(tsNow, sizeof(tsNow), "%Y-%m-%dT%H:%M:%SZ", utc);
 
-  String body =
+  // Pre-reserve once; this body is rebuilt on every loop() cycle, so
+  // avoiding repeated reallocation here matters more than for the
+  // LocationInformationRequest above.
+  String body;
+  body.reserve(750);
+  body =
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
     "<OJP xmlns=\"http://www.vdv.de/ojp\""
     " xmlns:siri=\"http://www.siri.org.uk/siri\""
@@ -940,32 +957,37 @@ void fetchStationBoardData() {
     " version=\"2.0\">"
     "<OJPRequest>"
     "<siri:ServiceRequest>"
-    "<siri:RequestTimestamp>"
-    + String(tsNow) + "</siri:RequestTimestamp>"
-                      "<siri:RequestorRef>SBB-EPaper-Display_prod</siri:RequestorRef>"
-                      "<OJPStopEventRequest>"
-                      "<siri:RequestTimestamp>"
-    + String(tsNow) + "</siri:RequestTimestamp>"
-                      "<siri:MessageIdentifier>SER-1</siri:MessageIdentifier>"
-                      "<Location>"
-                      "<PlaceRef>"
-                      "<siri:StopPointRef>"
-    + stationID + "</siri:StopPointRef>"
-                  "<Name><Text>stop</Text></Name>"
-                  "</PlaceRef>"
-                  "<DepArrTime>"
-    + String(tsNow) + "</DepArrTime>"
-                      "</Location>"
-                      "<Params>"
-                      "<NumberOfResults>"
-    + String(numEntries) + "</NumberOfResults>"
-                           "<StopEventType>departure</StopEventType>"
-                           "<UseRealtimeData>full</UseRealtimeData>"
-                           "</Params>"
-                           "</OJPStopEventRequest>"
-                           "</siri:ServiceRequest>"
-                           "</OJPRequest>"
-                           "</OJP>";
+    "<siri:RequestTimestamp>";
+  body += tsNow;
+  body += "</siri:RequestTimestamp>"
+          "<siri:RequestorRef>SBB-EPaper-Display_prod</siri:RequestorRef>"
+          "<OJPStopEventRequest>"
+          "<siri:RequestTimestamp>";
+  body += tsNow;
+  body += "</siri:RequestTimestamp>"
+          "<siri:MessageIdentifier>SER-1</siri:MessageIdentifier>"
+          "<Location>"
+          "<PlaceRef>"
+          "<siri:StopPointRef>";
+  body += stationID;
+  body += "</siri:StopPointRef>"
+          "<Name><Text>stop</Text></Name>"
+          "</PlaceRef>"
+          "<DepArrTime>";
+  body += tsNow;
+  body += "</DepArrTime>"
+          "</Location>"
+          "<Params>"
+          "<NumberOfResults>";
+  body += numEntries;
+  body += "</NumberOfResults>"
+          "<StopEventType>departure</StopEventType>"
+          "<UseRealtimeData>full</UseRealtimeData>"
+          "</Params>"
+          "</OJPStopEventRequest>"
+          "</siri:ServiceRequest>"
+          "</OJPRequest>"
+          "</OJP>";
 
   ojpPostStream(body);
 }
