@@ -107,10 +107,22 @@ const char *time_zone = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 // ---------------------------------------------------------------------------
 // ISR – identical to original
 // ---------------------------------------------------------------------------
+
+/**
+ * @brief Button interrupt handler (rising edge on BUTTON_1).
+ *
+ * Only sets a flag; the actual station-cycling logic runs in loop()
+ * to keep the ISR itself minimal, as required on the ESP32.
+ */
 void IRAM_ATTR selectStationID() {
   buttonPressed = true;
 }
 
+/**
+ * @brief SNTP callback, invoked once the system time has been
+ *        synchronized from the configured NTP servers.
+ * @param t Pointer to the new time value (unused, informational only).
+ */
 void timeavailable(struct timeval *t) {
   Serial.println("[WiFi]: Got time adjustment from NTP!");
 }
@@ -118,6 +130,19 @@ void timeavailable(struct timeval *t) {
 // ===========================================================================
 // setup() – identical to original
 // ===========================================================================
+/**
+ * @brief Arduino setup routine, run once at boot.
+ *
+ * Performs, in order:
+ *  1. WiFi connection
+ *  2. RTC (PCF8563) detection and init over I2C
+ *  3. Button interrupt attachment
+ *  4. NTP time sync (blocks until a valid local time is available)
+ *  5. ADC calibration for battery voltage readings
+ *  6. E-paper display init and framebuffer allocation (PSRAM)
+ *  7. Initial GPS fix + reverse geocoding + nearest-stop lookup
+ *  8. First render of station name and departure board
+ */
 void setup() {
   Serial.begin(115200);
   connectWifi();
@@ -191,6 +216,19 @@ void setup() {
 // ===========================================================================
 // loop() – identical to original
 // ===========================================================================
+/**
+ * @brief Main loop, runs continuously after setup().
+ *
+ * On each cycle:
+ *  - Logs NTP/RTC time to Serial and refreshes the time display.
+ *  - If the button was pressed since the last cycle, advances to the
+ *    next known station (wrapping back to index 0, which retries GPS
+ *    on the following cycle) and re-fetches its departure board.
+ *  - Otherwise simply refreshes the departure board for the current
+ *    station.
+ *  - Sleeps for `sleepInterval` ms (or until the button is pressed
+ *    again) before repeating.
+ */
 void loop() {
   struct tm timeInfo;
 
@@ -337,6 +375,17 @@ void fetchGPSFix() {
 // ===========================================================================
 // ojpPost() – used only for small responses (LocationInfo ~2KB)
 // ===========================================================================
+/**
+ * @brief Sends an OJP XML request via HTTPS POST and returns the full
+ *        response body in memory.
+ *
+ * Intended for small responses only (e.g. LocationInformationRequest,
+ * ~2 KB). For the larger StopEventRequest response, use
+ * ojpPostStream() instead to avoid buffering the whole reply.
+ *
+ * @param body Raw OJP XML request body.
+ * @return Response body as a String, or "" on any HTTP/network error.
+ */
 String ojpPost(const String &body) {
   WiFiClientSecure client;
   client.setInsecure();
@@ -365,6 +414,19 @@ String ojpPost(const String &body) {
 // ===========================================================================
 // ISO8601 UTC -> lokale HH:MM
 // ===========================================================================
+/**
+ * @brief Converts an ISO 8601 UTC timestamp ("YYYY-MM-DDTHH:MM:SSZ",
+ *        as returned by OJP) into a local "HH:MM" string.
+ *
+ * The local offset is derived at call time from the difference
+ * between localtime_r() and gmtime_r() on the current system clock
+ * (already NTP/timezone-adjusted via configTzTime() in setup()), so
+ * this correctly handles both CET and CEST without hardcoding an
+ * offset.
+ *
+ * @param iso UTC timestamp string, e.g. "2026-07-09T12:31:00Z".
+ * @return Local time formatted as "HH:MM".
+ */
 String isoToHHMM(const String &iso) {
   // Erwartet: 2026-07-09T12:31:00Z
 
@@ -406,6 +468,21 @@ String isoToHHMM(const String &iso) {
 // ===========================================================================
 // Berechnet die Verspätung in Minuten
 // ===========================================================================
+/**
+ * @brief Computes the delay in whole minutes between a planned and an
+ *        estimated departure timestamp.
+ *
+ * Both timestamps must be in "YYYY-MM-DDTHH:MM:SSZ" format. The
+ * result is clamped to the range [0, 120] minutes: early departures
+ * (negative delay) are reported as 0, and unrealistic values (e.g.
+ * from a parsing glitch) are capped at 120 rather than displayed
+ * as-is.
+ *
+ * @param planned   Timetabled departure time (OJP `TimetabledTime`).
+ * @param estimated Real-time estimated departure time (OJP `EstimatedTime`).
+ * @return Delay in minutes, clamped to [0, 120]; 0 if either
+ *         timestamp fails to parse.
+ */
 int calcDelay(const String &planned,
               const String &estimated) {
   struct tm tmPlanned = {};
@@ -654,6 +731,20 @@ bool ojpPostStream(const String &body) {
 // ===========================================================================
 // extractTag() – lightweight XML field extractor
 // ===========================================================================
+/**
+ * @brief Extracts the text content between the first matching
+ *        `open`/`close` tag pair found in `xml`, starting at `from`.
+ *
+ * This is a minimal string-search based XML reader used instead of a
+ * full XML parser, to keep memory usage low on the ESP32. It does
+ * not handle nested tags of the same name.
+ *
+ * @param xml   Source XML/text to search in.
+ * @param open  Opening tag or marker to search for, e.g. "<StopPlaceRef>".
+ * @param close Closing tag or marker, e.g. "</StopPlaceRef>".
+ * @param from  Index to start searching from (default 0).
+ * @return Text between `open` and `close`, or "" if either is not found.
+ */
 String extractTag(const String &xml, const String &open,
                   const String &close, int from = 0) {
   int s = xml.indexOf(open, from);
@@ -670,6 +761,18 @@ String extractTag(const String &xml, const String &open,
 //          transport.opendata.ch/v1/locations
 // Fills stationDataArray[] with identical fields to the original.
 // ===========================================================================
+/**
+ * @brief Finds the nearest stops to the current xCoord/yCoord via
+ *        OJP's LocationInformationRequest and fills stationDataArray[].
+ *
+ * Requests up to `maxStations` stops within OJP_RADIUS_M meters,
+ * computes each stop's great-circle (Haversine) distance from the
+ * current position, and stores id/name/distance in
+ * stationDataArray[]. On success, updates `stationsFound` and sets
+ * `stationID` to the currently selected station (stationIndex).
+ * Does nothing (leaves prior data untouched) if the request fails or
+ * returns no usable results.
+ */
 void fetchStationDataFromGPS() {
   Serial.println("[OJP] LocationInfo lat=" + xCoord + " lng=" + yCoord);
 
@@ -783,6 +886,15 @@ void fetchStationDataFromGPS() {
 //          transport.opendata.ch/v1/stationboard
 // Fills stationBoardData[] with identical fields to the original.
 // ===========================================================================
+/**
+ * @brief Fetches the next departures for the currently selected
+ *        station and fills stationBoardData[] via ojpPostStream().
+ *
+ * Builds an OJP StopEventRequest for `stationDataArray[stationIndex]`
+ * requesting `numEntries` real-time departures, and streams the
+ * response. Returns immediately without making a request if no
+ * station is currently selected (empty station_id).
+ */
 void fetchStationBoardData() {
   if (stationDataArray[stationIndex].station_id.length() == 0) return;
 
@@ -837,6 +949,15 @@ void fetchStationBoardData() {
 // ===========================================================================
 // Display functions – IDENTICAL to original
 // ===========================================================================
+/**
+ * @brief Reads the battery voltage via the ADC and logs it to Serial.
+ *
+ * Converts the raw ADC reading using the eFuse-calibrated `vref`
+ * (see setup()), the on-board 1:2 voltage divider, and the ADC
+ * reference voltage. Values are clamped at 4.2 V (typical Li-Ion
+ * full-charge voltage). The result is currently logged only; it is
+ * not yet rendered on the display.
+ */
 void readBatVoltage() {
   delay(10);
   uint16_t v = analogRead(BATT_PIN);
@@ -845,6 +966,13 @@ void readBatVoltage() {
   Serial.println("➸ Voltage: " + String(battery_voltage) + "V");
 }
 
+/**
+ * @brief Draws the static "GPS:" / "Haltestelle:" (Stop:) labels.
+ *
+ * Called once from setup() before the first render; the labels are
+ * outside the areas cleared/redrawn by displayStationData() and
+ * displayStationBoardData(), so they persist across refreshes.
+ */
 void title() {
   int32_t cursor_x, cursor_y;
   cursor_x = 30;
@@ -855,6 +983,18 @@ void title() {
   writeln((GFXfont *)&FiraSans, (char *)"Haltestelle: ", &cursor_x, &cursor_y, NULL);
 }
 
+/**
+ * @brief Renders the current GPS address and nearest-stop info.
+ *
+ * Clears and redraws two rows:
+ *  - Row 1: the reverse-geocoded street address (gpsData.x_coord).
+ *  - Row 2: the name and distance (in meters) of the currently
+ *    selected stop, from stationDataArray[stationIndex].
+ *
+ * Must be called between epd_poweron()/epd_poweroff(); relies on
+ * fetchGPSAddress() and fetchStationDataFromGPS() having already
+ * populated their respective data.
+ */
 void displayStationData() {
   int32_t cursor_x, cursor_y;
   epd_clear_area({ 250, 10, 700, 50 });
@@ -876,6 +1016,18 @@ void displayStationData() {
   writeln((GFXfont *)&FiraSans, nst, &cursor_x, &cursor_y, NULL);
 }
 
+/**
+ * @brief Renders the departure board (up to `numEntries` rows).
+ *
+ * For each entry in stationBoardData[], clears its row area and
+ * draws four columns: line name, destination, departure time, and
+ * (if delayed) the delay in minutes prefixed with "+". Rows with no
+ * data show the placeholder values set in ojpPostStream()
+ * ("-", "", "--:--", 0).
+ *
+ * Must be called between epd_poweron()/epd_poweroff(); relies on
+ * fetchStationBoardData() having already populated stationBoardData[].
+ */
 void displayStationBoardData() {
   int32_t cursor_x, cursor_y;
   const int base_y = 300;
@@ -916,6 +1068,15 @@ void displayStationBoardData() {
   }
 }
 
+/**
+ * @brief Renders the current local time as "HH:MM" in the top area.
+ *
+ * Clears its fixed-size area first, then draws the time obtained via
+ * getLocalTime(). Silently does nothing if the local time is not
+ * (yet) available.
+ *
+ * Must be called between epd_poweron()/epd_poweroff().
+ */
 void displayTime() {
   int32_t cursor_x = 500, cursor_y = 100;
   Rect_t clearRect = { 498, 55, 125, 55 };
@@ -932,6 +1093,13 @@ void displayTime() {
   }
 }
 
+/**
+ * @brief Connects to WiFi using credentials from credentials.h.
+ *
+ * Blocks (polling every 500 ms) until WiFi.status() reports
+ * WL_CONNECTED. There is currently no timeout or retry limit, so a
+ * wrong SSID/password will hang here indefinitely.
+ */
 void connectWifi() {
   Serial.println("Connecting to ");
   Serial.println(ssid);
