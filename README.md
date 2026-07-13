@@ -86,7 +86,30 @@ If your project needs GPS on battery power, you'll need to source a
 true 3.3 V rail (e.g. probe the board's voltage regulator output
 directly with a multimeter) rather than VBUS.
 
+**Troubleshooting note:** during setup, this GPS module briefly ran
+hot enough to raise concern that VBUS (5 V) was overvolting it. The
+actual cause turned out to be unrelated to the supply voltage: a
+short circuit between the backup battery's (+) terminal and the
+antenna's GND/shield inside the enclosure. Once that short was
+fixed, the module has run on VBUS without issue. If your module
+runs hot, check for stray contact between the antenna cable/shield
+and nearby battery terminals or other conductors before suspecting
+the supply voltage.
+
+**⚠️ Physical layout warning:** the antenna connector sits close
+enough to the backup battery holder that even a slight twist of the
+antenna cable/connector can reintroduce this same short - it's not
+a one-time assembly mistake, it's an ongoing risk from normal
+handling (transport, opening the enclosure, routing the cable
+during assembly). Recommended fix before closing up the enclosure:
+put a strip of Kapton or electrical tape over the battery holder's
+exposed contacts, and secure the antenna cable (e.g. with a small
+dab of hot glue or a cable tie) so it can't rotate or shift against
+the battery holder.
+
 ### 4 – Required Arduino libraries
+
+
 
 Install via Library Manager:
 - **TinyGPSPlus** by Mikal Hart (GPS NMEA parsing)
