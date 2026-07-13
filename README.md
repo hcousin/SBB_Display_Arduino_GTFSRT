@@ -58,10 +58,17 @@ If no fix is obtained within 30 s it falls back to the static stop list.
 
 Default UART pins (adjustable at the top of the `.ino`):
 
-| ESP32-S3 pin | GPS module |
-|---|---|
-| GPIO 44 | TX (output from GPS) |
-| GPIO 43 | RX (input to GPS, optional) |
+| ESP32-S3 pin | GPS module | Notes |
+|---|---|---|
+| GPIO 39 | TX (output from GPS) | Silkscreen label "CS" on the P8 header (left edge of the board, 3rd row from the top of the labeled section) |
+| GPIO 45 | RX (input to GPS, optional) | Silkscreen label "SCL" on the P8 header, right next to GPIO 39 |
+
+These are 2 of the 4 GPIOs LilyGO documents as free/unconnected on the
+T5-4.7-S3 (the other two, GPIO 10 and GPIO 48, are unused and available
+for other peripherals). GPIO 43/44 (the ESP32-S3's default UART0
+TX/RX, also used by the onboard USB-serial console) are intentionally
+**not** used for the GPS, to avoid conflicting with Serial output and
+firmware uploads.
 
 ### 4 – Required Arduino libraries
 

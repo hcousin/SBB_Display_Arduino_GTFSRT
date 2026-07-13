@@ -56,14 +56,20 @@
 #define SD_CS (42)
 #define BOARD_SCL (17)
 #define BOARD_SDA (18)
-#define GPIO_MISO (45)
+// Free/unused GPIOs on this board (see README "GPS module wiring" section
+// for the physical header location and silkscreen labels). Of the 4 pins
+// LilyGO documents as free on the T5-4.7-S3, GPIO45 and GPIO39 are used
+// below for the GPS UART; GPIO10 and GPIO48 remain free for future use.
 #define GPIO_MOSI (10)
-#define GPIO_SCLK (48)
-#define GPIO_CS (39)
+#define GPIO_MISO (48)  // silkscreen label "MSIO"
 
 // GPS UART pins
-#define GPS_RX_PIN (44)
-#define GPS_TX_PIN (43)
+// CHANGED: moved off GPIO43/44 (ESP32-S3 default UART0 TX/RX, shared with
+// the onboard USB-serial console) onto GPIO39/45 (silkscreen labels "CS"
+// and "SCL" on the P8 header - unused elsewhere on this board), to avoid
+// conflicting with Serial/programming.
+#define GPS_RX_PIN (39)  // -> GPS module TX  (P8 header, pin labeled "CS")
+#define GPS_TX_PIN (45)  // -> GPS module RX, optional (P8 header, pin labeled "SCL")
 #define GPS_BAUD (9600)
 #define GPS_FIX_TIMEOUT_MS (30000)
 
