@@ -96,6 +96,17 @@ runs hot, check for stray contact between the antenna cable/shield
 and nearby battery terminals or other conductors before suspecting
 the supply voltage.
 
+**⚠️ Physical layout warning:** the antenna connector sits close
+enough to the backup battery holder that even a slight twist of the
+antenna cable/connector can reintroduce this same short - it's not
+a one-time assembly mistake, it's an ongoing risk from normal
+handling (transport, opening the enclosure, routing the cable
+during assembly). Recommended fix before closing up the enclosure:
+put a strip of Kapton or electrical tape over the battery holder's
+exposed contacts, and secure the antenna cable (e.g. with a small
+dab of hot glue or a cable tie) so it can't rotate or shift against
+the battery holder.
+
 ### 4 – Required Arduino libraries
 
 
