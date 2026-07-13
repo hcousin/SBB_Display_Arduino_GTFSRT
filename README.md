@@ -62,6 +62,8 @@ Default UART pins (adjustable at the top of the `.ino`):
 |---|---|---|
 | GPIO 39 | TX (output from GPS) | Silkscreen label "CS" on the P8 header (left edge of the board, 3rd row from the top of the labeled section) |
 | GPIO 45 | RX (input to GPS, optional) | Silkscreen label "SCL" on the P8 header, right next to GPIO 39 |
+| VBUS | VCC | Topmost row of the same P8 header, left column. **5 V, only powered while USB-C is connected** (see note below) |
+| GND | GND | Any GND pin on the P8 header |
 
 These are 2 of the 4 GPIOs LilyGO documents as free/unconnected on the
 T5-4.7-S3 (the other two, GPIO 10 and GPIO 48, are unused and available
@@ -69,6 +71,20 @@ for other peripherals). GPIO 43/44 (the ESP32-S3's default UART0
 TX/RX, also used by the onboard USB-serial console) are intentionally
 **not** used for the GPS, to avoid conflicting with Serial output and
 firmware uploads.
+
+**Power note:** this board does not break out a dedicated 3.3 V pin
+on the P8 header, only VBUS (raw USB-C 5 V, present only when USB is
+plugged in) and various signal/GND pins. The tested GPS module here
+is an ATGM336H-5N-31 (GOOUUU-GPS-BD breakout), whose seller-specified
+VCC range is 5 V DC (the underlying AT6558 chip itself only needs
+2.7–3.6 V, so VBUS is safely within range) — VBUS is used for VCC.
+**Consequence: GPS is only powered while the device is connected via
+USB-C. On battery-only operation (BAT+/BAT-), the GPS module loses
+power and no fix will be obtained** — the device falls back to the
+static stop list in that case, same as if no GPS were wired at all.
+If your project needs GPS on battery power, you'll need to source a
+true 3.3 V rail (e.g. probe the board's voltage regulator output
+directly with a multimeter) rather than VBUS.
 
 ### 4 – Required Arduino libraries
 

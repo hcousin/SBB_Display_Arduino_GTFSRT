@@ -70,6 +70,10 @@
 // conflicting with Serial/programming.
 #define GPS_RX_PIN (39)  // -> GPS module TX  (P8 header, pin labeled "CS")
 #define GPS_TX_PIN (45)  // -> GPS module RX, optional (P8 header, pin labeled "SCL")
+// GPS module VCC -> VBUS (topmost pin, same P8 header). Raw USB-C 5V,
+// only present while USB is connected - no 3.3V rail is broken out on
+// this header. See README "GPS module wiring" for the battery-power
+// caveat (GPS loses power on battery-only operation).
 #define GPS_BAUD (9600)
 #define GPS_FIX_TIMEOUT_MS (30000)
 
