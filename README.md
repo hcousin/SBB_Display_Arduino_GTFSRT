@@ -109,31 +109,21 @@ GPS, to avoid conflicting with Serial output and firmware uploads.
 pin reference above.)
 
 **Power and antenna placement:** VCC is wired to VBUS (topmost row
-of the P8 header) since this board doesn't break out a dedicated
-3.3 V pin - only VBUS (raw USB-C 5 V, present only while USB-C is
-connected) and various signal/GND pins. The tested GPS module
-(ATGM336H-5N-31 / GOOUUU-GPS-BD breakout) is seller-specified for
-5 V DC, and its underlying AT6558 chip needs only 2.7–3.6 V, so VBUS
-is a safe fit. **Consequence: GPS only gets power while connected
-via USB-C - on battery-only operation (BAT+/BAT-) it loses power
-and no fix will be obtained**, same as if no GPS were wired. If you
-need GPS on battery power, you'd need to source a true 3.3 V rail
-instead (e.g. probe the board's voltage regulator output with a
-multimeter).
+of the P8 header), since this board has no dedicated 3.3 V pin -
+only VBUS (raw USB-C 5 V, present only while USB-C is connected).
+The tested GPS module (ATGM336H-5N-31 / GOOUUU-GPS-BD) is
+seller-specified for 5 V, and its AT6558 chip needs only 2.7–3.6 V,
+so VBUS fits. GPS therefore only has power while USB-C is connected;
+on battery-only operation it falls back to the static stop list, as
+if no GPS were wired. A true 3.3 V rail would be needed for
+battery-powered GPS.
 
-During initial setup this module briefly ran hot enough to suspect
-VBUS was overvolting it - it wasn't. The actual cause was a short
-circuit between the backup battery's (+) terminal and the antenna's
-GND/shield inside the enclosure, unrelated to supply voltage. Once
-fixed, the module has run on VBUS without issue. **This is a
-recurring risk, not a one-time mistake:** the antenna connector
-sits close enough to the battery holder that even a slight twist of
-the cable/connector can reintroduce the same short during normal
-handling (transport, opening the enclosure, re-routing during
-assembly). Before closing up the enclosure, put a strip of Kapton
-or electrical tape over the battery holder's exposed contacts, and
-secure the antenna cable (e.g. a small dab of hot glue or a cable
-tie) so it can't shift against the holder.
+The module once ran hot; the cause was a short between the backup
+battery's (+) terminal and the antenna's GND/shield, not VBUS. Fixed,
+but the connector sits close enough to the battery holder that a
+slight twist can reintroduce the short. Insulate the holder's
+contacts with Kapton/electrical tape and secure the antenna cable
+(hot glue or a cable tie) before closing the enclosure.
 
 ### 4 – Required Arduino libraries
 
