@@ -82,8 +82,10 @@
 #define OJP_RADIUS_M 500
 
 // Set to false if no GPS module is connected – skips the 30s wait
-// and uses DEFAULT_LAT / DEFAULT_LNG from credentials.h immediately
-#define GPS_ENABLED false
+// and uses DEFAULT_LAT / DEFAULT_LNG from credentials.h immediately.
+// Enabled now that the GPS module is wired (GPIO39/45) and confirmed
+// working (module LED blinks after acquiring a fix).
+#define GPS_ENABLED true
 
 // ---------------------------------------------------------------------------
 // Debug logging
