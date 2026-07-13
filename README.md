@@ -29,6 +29,43 @@ This version uses the official **OJP (Open Journey Planner)** API from
 | Time | `ojp:EstimatedTime` (if delayed) or `ojp:TimetabledTime` |
 | Delay | Difference between estimated and timetabled times (minutes) |
 
+## Hardware
+
+**Board:** LilyGO T5-4.7-S3 ("Screen-4.7-S3"), silkscreened revision
+**V2.3, 2021-6-10**. ESP32-S3-WROOM-1 MCU, 4.7" e-paper panel, onboard
+PCF8563 RTC, microSD slot, LiPo charging circuit, STEMMA QT/Qwiic
+JST-SH 4-pin connector. Board-level pin assignments below are specific
+to this revision; other LilyGO e-paper boards may differ.
+
+### Pin reference
+
+| Define | GPIO | Purpose | Status |
+|---|---|---|---|
+| `BUTTON_1` | 21 | Station-cycling push button (ISR, rising edge) | Active |
+| `BATT_PIN` | 14 | Battery voltage ADC input | Active (read in `readBatVoltage()`, logged only - not yet shown on the display, see [issue #8](https://github.com/hcousin/SBB_Display_Arduino_GTFSRT/issues/8)) |
+| `BOARD_SDA` / `BOARD_SCL` | 18 / 17 | I2C bus to the onboard PCF8563 RTC | Active, **but the RTC is currently not responding** - every boot logs `RTC initialization failed!`. Root cause not yet found; see "Known hardware issues" below |
+| `GPS_RX_PIN` / `GPS_TX_PIN` | 39 / 45 | UART to external GPS module (TX/RX) | Active - see "GPS module wiring" below for full wiring incl. power |
+| `GPIO_MOSI` / `GPIO_MISO` | 10 / 48 | Free/unconnected GPIOs (LilyGO-documented) | Reserved, unused |
+| `SD_MISO` / `SD_MOSI` / `SD_SCLK` / `SD_CS` | 16 / 15 / 11 / 42 | microSD card SPI | **Defined but dead code** - `SD.begin()` is never called, no SD card functionality is implemented despite `#include <SD.h>` |
+
+The e-paper panel itself is driven by the `epd47`/`LilyGo-EPD47`
+library internally and doesn't need separate pin defines in this
+sketch.
+
+### Known hardware issues
+
+- **RTC (PCF8563) not detected** - open, unresolved. An I2C scan
+  (both SDA/SCL orientations) found no device at all on the bus,
+  which only has the RTC on it on this board revision. Likely a
+  soldering/manufacturing defect on this specific unit; next steps
+  would be a visual inspection of the RTC chip's solder joints and/or
+  a multimeter check of its VDD pin. Not currently blocking - the
+  sketch gets its time from NTP at boot regardless (see `setup()`),
+  the RTC would only help retain time across reboots without WiFi.
+- **Antenna connector proximity to the backup battery holder** -
+  resolved, but a recurring risk on reassembly. See "Physical layout
+  warning" under "GPS module wiring" below.
+
 ## Setup
 
 ### 1 – Get an API key
