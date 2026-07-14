@@ -127,8 +127,29 @@ contacts with Kapton/electrical tape and secure the antenna cable
 
 ### 4 – Required Arduino libraries
 
-Install via Library Manager:
-- **TinyGPSPlus** by Mikal Hart (GPS NMEA parsing)
+Install via Library Manager (or "Add .ZIP Library" if not indexed):
+
+- **LilyGo-EPD47** by Xinyuan-LilyGO — e-paper panel driver
+  (`epd_driver.h`). Use the **`esp32s3` branch** specifically
+  (`git clone -b esp32s3 https://github.com/Xinyuan-LilyGO/LilyGo-EPD47`),
+  the default branch targets older, non-S3 LilyGo e-paper boards.
+- **SensorLib** by lewisxhe — RTC driver (`SensorPCF8563.hpp`),
+  used directly by this sketch for the onboard PCF8563. Also a
+  declared dependency of LilyGo-EPD47 itself.
+- **Button2** by lennarthennigs — not used directly by this sketch
+  (button handling here is a plain `attachInterrupt`), but it's a
+  declared dependency of LilyGo-EPD47's `library.json`. Arduino
+  Library Manager installs it automatically alongside LilyGo-EPD47;
+  if you instead install LilyGo-EPD47 via "Add .ZIP Library" or
+  manual git clone, install this one too to avoid a missing-header
+  build error.
+- **TinyGPSPlus** by Mikal Hart — GPS NMEA parsing.
+
+Everything else the sketch includes (`WiFi.h`, `HTTPClient.h`,
+`WiFiClientSecure.h`, `SPI.h`, `SD.h`, `Wire.h`, `esp_adc_cal.h`,
+`esp_sntp.h`) ships with the ESP32 Arduino core - no separate
+install needed. `firasans.h` and `sbbdisplay.h` are project files
+already included in this repo's sketch folder, not libraries.
 
 ArduinoJson is **no longer required**.
 
